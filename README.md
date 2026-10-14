@@ -5,7 +5,7 @@ Aplikasi desktop native (`.exe`, ditulis dengan Rust dan egui — tanpa browser,
 1. **Looping video background**: video pendek diulang otomatis sepanjang total durasi lagu. Gambar juga bisa dipakai (diubah menjadi video bergerak dengan zoom/pan dan denyut mengikuti ketukan).
 2. **Kompilasi banyak lagu**: beberapa lagu digabung berurutan menjadi satu video, lengkap dengan timestamp YouTube.
 3. **Auto lirik karaoke (Whisper AI)**: deteksi lirik per kata dengan timing, atau impor file `.lrc`. Efek *word-by-word wipe* dibakar ke video lewat subtitle ASS.
-4. **27 efek visual**: 16 overlay animasi (hujan, salju, bara api, bokeh, light leak, kilau bintang, kunang-kunang, debu emas, langit bintang, konfeti, hati, kelopak sakura, kabut, aurora, sinar cahaya, lens flare) dan 11 filter warna/gaya (teal & orange, hangat, dingin, vintage, sepia, hitam putih, dreamy, bloom, sinema, denyut, VHS, glitch).
+4. **49 efek visual** (ditambah opsi tanpa efek): 37 overlay animasi dan 12 filter warna/gaya. Overlay antara lain hujan, salju, bara api, bokeh, light leak, kilau bintang, kunang-kunang, konfeti, kembang api, aurora, petir, kelopak sakura, nebula, matrix, dan synthwave. Filter antara lain teal & orange, sepia, hitam putih, dreamy, bloom, sinema, VHS, dan glitch. Daftar lengkap ada di dropdown **Efek visual**.
 5. **Thumbnail YouTube** dari frame video dan daftar lagu.
 6. **Manajemen penyimpanan**: lihat ukuran, hapus berkas sementara dan video lama.
 
@@ -59,7 +59,7 @@ Rilis otomatis: push tag `v*` memicu `.github/workflows/release.yml` yang memban
 
 | Variabel | Fungsi |
 |----------|--------|
-| `LOOPKARAOKE_HOME` | Folder data (`temp/`, `outputs/`, `models/`). Default: folder executable (release) atau folder kerja (debug) |
+| `LOOPKARAOKE_HOME` | Folder data (`temp/`, `outputs/`, `models/`, `tools/`). Default: folder executable (release) atau folder kerja (debug) |
 
 Folder `assets/effects/` (video overlay) dicari di samping executable, lalu di folder proyek. Video overlay dibuat ulang dengan `cargo run --release --example gen_effects [nama...]` (loop mulus 8 detik, 1920x1080, butuh FFmpeg).
 
@@ -79,12 +79,15 @@ src/
   storage.rs         statistik dan pembersihan
   demo.rs            data contoh
 tests/               uji end-to-end
+examples/gen_effects generator video overlay
 assets/effects/      video overlay efek visual
+assets/fonts/        Inter dan JetBrains Mono (lisensi OFL)
+build.bat            build release dan paket zip
 ```
 
 ### Perbedaan dari versi Python/web
 
 - Antarmuka native; pemutar audio/video dan monitor karaoke di dalam aplikasi diganti tombol **Buka di pemutar** (pemutar bawaan Windows).
 - Whisper memakai `whisper.cpp` (model GGML) menggantikan `faster-whisper`; filter VAD belum ada.
-- Efek overlay memakai video di `assets/effects/`, dirender ulang dengan generator Rust (`examples/gen_effects.rs`) agar halus dan loop mulus; blend dilakukan di ruang RGB sehingga warna video tidak bergeser.
+- Efek overlay memakai video di `assets/effects/`, dirender ulang dengan generator Rust (`examples/gen_effects/`) agar halus dan loop mulus; blend dilakukan di ruang RGB sehingga warna video tidak bergeser.
 - Tidak ada server HTTP, jadi tidak ada lagi unggah berkas: file dipilih langsung dari disk.
