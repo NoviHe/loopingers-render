@@ -1,1 +1,0 @@
-# LoopKaraoke Studio Core Package

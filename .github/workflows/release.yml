@@ -13,25 +13,41 @@ jobs:
   build-windows:
     name: Build Windows Desktop App
     runs-on: windows-latest
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting, lint and tests
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib
+
+      - name: Build release executable
+        run: cargo build --release
+
+      - name: Download FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        id: ffmpeg
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          ffmpeg-version: release
 
-      - name: Install Dependencies
+      - name: Package
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Build Standalone Desktop App
-        run: |
-          python build_desktop.py
+          $dist = "dist/LoopKaraokeStudio"
+          New-Item -ItemType Directory -Force "$dist/assets" | Out-Null
+          Copy-Item target/release/loopkaraoke-studio.exe "$dist/LoopKaraokeStudio.exe"
+          Copy-Item -Recurse assets/effects "$dist/assets/effects"
+          $ffmpegDir = Split-Path (Get-Command ffmpeg).Source
+          Copy-Item "$ffmpegDir/ffmpeg.exe", "$ffmpegDir/ffprobe.exe" $dist
+          Compress-Archive -Path $dist -DestinationPath dist/LoopKaraokeStudio-Windows-x64.zip
 
       - name: Create GitHub Release & Upload Asset
         uses: softprops/action-gh-release@v2
@@ -41,7 +57,6 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: |
-            dist/LoopKaraokeStudio-Windows-x64.zip
+          files: dist/LoopKaraokeStudio-Windows-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
