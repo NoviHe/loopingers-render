@@ -19,8 +19,8 @@ use loopkaraoke::{
 
 use super::{help::background as help, theme, Event, StudioApp};
 
-const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "mov", "mkv", "webm", "avi"];
-const IMAGE_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
+pub(super) const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "mov", "mkv", "webm", "avi"];
+pub(super) const IMAGE_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 const IMAGE_CLIP_SECONDS: f64 = 10.0;
 const IMAGE_CLIP_FPS: u32 = 30;
 
@@ -98,7 +98,7 @@ impl StudioApp {
 
     fn background_source(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Pilih Video...").clicked() {
+            if ui.add(theme::primary_button("Pilih Video...")).clicked() {
                 let picked = rfd::FileDialog::new()
                     .add_filter("Video", &VIDEO_EXTENSIONS)
                     .pick_file();
@@ -116,40 +116,55 @@ impl StudioApp {
                 }
             }
             theme::info(ui, help::PICK_IMAGE);
-            if ui.button("Coba Demo Sampel").clicked() {
+            if ui.button("Coba Demo").clicked() {
                 self.load_demo();
             }
             theme::info(ui, help::DEMO);
         });
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
-        if let Some(background) = &self.background {
-            let video = &background.video;
-            let source = background
-                .image
-                .as_deref()
-                .and_then(Path::file_name)
-                .map_or_else(
-                    || video.filename.clone(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-            let summary = format!(
-                "{source}\n{}x{} • {} • {:.0} fps • {:.1} MB",
-                video.width, video.height, video.duration_str, video.fps, video.size_mb
-            );
-            let path = PathBuf::from(&video.path);
-            ui.group(|ui| {
-                ui.label(summary);
-                ui.horizontal(|ui| {
-                    if ui.button("Buka di pemutar").clicked() {
-                        let _ = open_path(&path);
-                    }
-                    theme::info(ui, help::OPEN_PLAYER);
+        let frame = egui::Frame::new()
+            .fill(theme::FIELD_BG)
+            .stroke(egui::Stroke::new(1.0, theme::FIELD_BORDER))
+            .corner_radius(4)
+            .inner_margin(egui::Margin::same(12));
+        let Some(background) = &self.background else {
+            frame.show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.add_space(14.0);
+                    ui.label("Seret video atau gambar ke jendela ini");
+                    ui.small("atau pakai tombol di atas");
+                    ui.add_space(14.0);
                 });
             });
-        } else {
-            ui.label("Belum ada background. Pilih video, gambar, atau coba demo.");
-        }
+            return;
+        };
+        let video = &background.video;
+        let source = background
+            .image
+            .as_deref()
+            .and_then(Path::file_name)
+            .map_or_else(
+                || video.filename.clone(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+        let path = PathBuf::from(&video.path);
+        let specs = format!(
+            "{}x{} • {} • {:.0} fps • {:.1} MB",
+            video.width, video.height, video.duration_str, video.fps, video.size_mb
+        );
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.strong(source);
+            ui.small(specs);
+            ui.horizontal(|ui| {
+                if ui.small_button("Buka di pemutar").clicked() {
+                    let _ = open_path(&path);
+                }
+                theme::info(ui, help::OPEN_PLAYER);
+            });
+        });
     }
 
     fn background_options(&mut self, ui: &mut egui::Ui) {
@@ -199,7 +214,7 @@ impl StudioApp {
         }
     }
 
-    fn load_video(&mut self, path: PathBuf) {
+    pub(super) fn load_video(&mut self, path: PathBuf) {
         let tools = self.tools.clone();
         self.spawn(async move {
             Event::Background(
@@ -210,7 +225,7 @@ impl StudioApp {
         });
     }
 
-    fn load_image(&mut self, image: PathBuf) {
+    pub(super) fn load_image(&mut self, image: PathBuf) {
         let job = ImageJob {
             image,
             motion: self.motion,

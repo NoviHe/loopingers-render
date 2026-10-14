@@ -28,7 +28,12 @@ use loopkaraoke::{
         LyricLine,
     },
     media::AudioInfo,
-    render::{encoder::Encoder, image_video::Motion, job::JobHandle, looper::FitMode},
+    render::{
+        encoder::Encoder,
+        image_video::Motion,
+        job::{JobHandle, JobStatus},
+        looper::FitMode,
+    },
     storage::{self, CleanupOptions, StorageStats},
 };
 use tokio::sync::Semaphore;
@@ -72,6 +77,25 @@ impl Tab {
             Self::Render => help::TAB_RENDER,
             Self::Thumbnail => help::TAB_THUMBNAIL,
             Self::Storage => help::TAB_STORAGE,
+        }
+    }
+
+    /// The next step of the main workflow, if this tab is part of it.
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Background => Some(Self::Playlist),
+            Self::Playlist => Some(Self::Lyrics),
+            Self::Lyrics => Some(Self::Render),
+            _ => None,
+        }
+    }
+
+    fn previous(self) -> Option<Self> {
+        match self {
+            Self::Playlist => Some(Self::Background),
+            Self::Lyrics => Some(Self::Playlist),
+            Self::Render => Some(Self::Lyrics),
+            _ => None,
         }
     }
 
@@ -446,6 +470,60 @@ impl StudioApp {
         self.tracks.iter().map(|track| track.duration).sum()
     }
 
+    /// Whether the user has finished the step behind `tab`, shown as a dot on the tab.
+    fn step_done(&self, tab: Tab) -> bool {
+        match tab {
+            Tab::Background => self.background.is_some(),
+            Tab::Playlist => !self.tracks.is_empty(),
+            Tab::Lyrics => {
+                !self.tracks.is_empty() && self.tracks.iter().all(|track| !track.lyrics.is_empty())
+            }
+            Tab::Render => self
+                .job
+                .as_ref()
+                .is_some_and(|job| matches!(job.snapshot().status, JobStatus::Completed)),
+            Tab::Thumbnail => self.thumbnail.result.is_some(),
+            Tab::Storage => false,
+        }
+    }
+
+    /// Routes dropped files to the step they belong to, by extension.
+    fn handle_drop(&mut self, files: Vec<egui::DroppedFile>) {
+        if !self.ffmpeg_ready {
+            return;
+        }
+        let mut audios = Vec::new();
+        for path in files.into_iter().filter_map(|file| file.path) {
+            let extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            let is = |list: &[&str]| list.contains(&extension.as_str());
+            if is(&background::VIDEO_EXTENSIONS) {
+                self.tab = Tab::Background;
+                self.load_video(path);
+            } else if is(&background::IMAGE_EXTENSIONS) {
+                self.tab = Tab::Background;
+                self.load_image(path);
+            } else if is(&playlist::AUDIO_EXTENSIONS) {
+                audios.push(path);
+            } else if is(&["lrc", "txt"]) && !self.tracks.is_empty() {
+                self.tab = Tab::Lyrics;
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => self.apply_lrc(&text),
+                    Err(error) => self.error(format!("File lirik tidak terbaca: {error}")),
+                }
+            } else {
+                self.error(format!("Format file tidak didukung: {}", path.display()));
+            }
+        }
+        if !audios.is_empty() {
+            self.tab = Tab::Playlist;
+            self.load_audios(audios);
+        }
+    }
+
     fn job_running(&self) -> bool {
         self.job
             .as_ref()
@@ -461,6 +539,10 @@ impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
+        }
+        let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+        if !dropped.is_empty() {
+            self.handle_drop(dropped);
         }
 
         egui::TopBottomPanel::top("top")
@@ -484,7 +566,13 @@ impl eframe::App for StudioApp {
                     );
                     ui.add_space(18.0);
                     for tab in Tab::ALL {
-                        if theme::header_tab(ui, tab.label(), self.tab == tab, tab.help()) {
+                        if theme::header_tab(
+                            ui,
+                            tab.label(),
+                            self.tab == tab,
+                            self.step_done(tab),
+                            tab.help(),
+                        ) {
                             self.tab = tab;
                         }
                     }
@@ -508,7 +596,7 @@ impl eframe::App for StudioApp {
             .frame(
                 egui::Frame::new()
                     .fill(theme::PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(14, 6))
+                    .inner_margin(egui::Margin::symmetric(14, 8))
                     .outer_margin(egui::Margin {
                         left: theme::GAP,
                         right: theme::GAP,
@@ -516,22 +604,7 @@ impl eframe::App for StudioApp {
                         bottom: theme::GAP,
                     }),
             )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if self.pending > 0 {
-                        ui.spinner();
-                        ui.label("Memproses...");
-                    }
-                    if let Some(notice) = &self.notice {
-                        let color = if notice.is_error {
-                            theme::DANGER
-                        } else {
-                            theme::SUCCESS
-                        };
-                        ui.colored_label(color, &notice.text);
-                    }
-                });
-            });
+            .show(ctx, |ui| self.footer(ui));
 
         egui::CentralPanel::default()
             .frame(theme::panel_frame(16))
@@ -552,8 +625,97 @@ impl eframe::App for StudioApp {
                     });
             });
 
+        if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
+            drop_overlay(ctx);
+        }
+
         if self.job_running() || self.pending > 0 {
             ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+}
+
+fn drop_overlay(ctx: &egui::Context) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("drop_overlay"),
+    ));
+    let screen = ctx.screen_rect();
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(190));
+    painter.rect_stroke(
+        screen.shrink(12.0),
+        6.0,
+        egui::Stroke::new(2.0, theme::ACCENT),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        screen.center(),
+        egui::Align2::CENTER_CENTER,
+        "Lepaskan file di sini\nVideo atau gambar untuk background, audio untuk playlist, .lrc untuk lirik",
+        egui::FontId::proportional(16.0),
+        egui::Color32::WHITE,
+    );
+}
+
+impl StudioApp {
+    /// Bottom bar: status on the left, progress and the step's main action on the right.
+    fn footer(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if self.pending > 0 {
+                ui.spinner();
+                ui.label("Memproses...");
+            }
+            if let Some(notice) = &self.notice {
+                let color = if notice.is_error {
+                    theme::DANGER
+                } else {
+                    theme::SUCCESS
+                };
+                ui.colored_label(color, &notice.text);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.footer_actions(ui);
+            });
+        });
+    }
+
+    fn footer_actions(&mut self, ui: &mut egui::Ui) {
+        if self.tab == Tab::Render {
+            let blocker = self.render_blocker();
+            let running = self.job_running();
+            if ui
+                .add_enabled(
+                    blocker.is_none() && !running,
+                    theme::primary_button("Mulai Render"),
+                )
+                .clicked()
+            {
+                self.start_render();
+            }
+            if let (Some(reason), false) = (blocker, running) {
+                ui.colored_label(theme::WARNING, reason);
+            }
+        } else if let Some(next) = self.tab.next() {
+            if ui
+                .add(theme::primary_button(format!("Lanjut: {}", next.label())))
+                .clicked()
+            {
+                self.tab = next;
+            }
+        }
+        if let Some(previous) = self.tab.previous() {
+            if ui.button("Kembali").clicked() {
+                self.tab = previous;
+            }
+        }
+        if let Some(job) = self.job.as_ref().filter(|job| job.snapshot().is_running()) {
+            let snapshot = job.snapshot();
+            ui.add(
+                egui::ProgressBar::new((snapshot.progress_percent / 100.0) as f32)
+                    .desired_width(200.0)
+                    .show_percentage(),
+            );
+            ui.label("Render");
         }
     }
 }

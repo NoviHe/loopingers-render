@@ -108,12 +108,19 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
-/// A header tab: 14 pt label, brighter when active, with a 2 pt underline.
-pub fn header_tab(ui: &mut egui::Ui, title: &str, active: bool, hint: &str) -> bool {
+/// The main action of a screen: accent-filled with white text.
+pub fn primary_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(Color32::WHITE).strong()).fill(ACCENT)
+}
+
+/// A header tab: 14 pt label, brighter when active, with a 2 pt underline and a green dot once
+/// the step is done.
+pub fn header_tab(ui: &mut egui::Ui, title: &str, active: bool, done: bool, hint: &str) -> bool {
     let galley =
         ui.painter()
             .layout_no_wrap(title.to_string(), FontId::proportional(14.0), TEXT_DIM);
-    let size = egui::vec2(galley.size().x + 20.0, HEADER_HEIGHT - 12.0);
+    let dot_width = if done { 12.0 } else { 0.0 };
+    let size = egui::vec2(galley.size().x + 20.0 + dot_width, HEADER_HEIGHT - 12.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let color = if active || response.hovered() {
         Color32::from_gray(0xe6)
@@ -122,6 +129,10 @@ pub fn header_tab(ui: &mut egui::Ui, title: &str, active: bool, hint: &str) -> b
     };
     let text_pos = egui::pos2(rect.min.x + 10.0, rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(text_pos, galley, color);
+    if done {
+        ui.painter()
+            .circle_filled(egui::pos2(rect.max.x - 13.0, rect.center().y), 3.0, SUCCESS);
+    }
     if active {
         let y = rect.bottom() + 3.0;
         ui.painter().line_segment(

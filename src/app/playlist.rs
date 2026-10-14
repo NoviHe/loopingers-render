@@ -3,7 +3,7 @@ use loopkaraoke::media::{build_chapters, format_clock, probe_audio, ChapterSourc
 
 use super::{help::playlist as help, theme, Event, StudioApp};
 
-const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"];
+pub(super) const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"];
 
 enum RowAction {
     Remove(usize),
@@ -20,7 +20,7 @@ impl StudioApp {
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            if ui.button("Tambah Lagu...").clicked() {
+            if ui.add(theme::primary_button("Tambah Lagu...")).clicked() {
                 let picked = rfd::FileDialog::new()
                     .add_filter("Audio", &AUDIO_EXTENSIONS)
                     .pick_files();
@@ -43,7 +43,7 @@ impl StudioApp {
         ui.add_space(8.0);
 
         if self.tracks.is_empty() {
-            ui.label("Belum ada lagu.");
+            ui.label("Belum ada lagu. Seret file audio ke jendela ini atau klik Tambah Lagu.");
         } else {
             ui.horizontal(|ui| {
                 ui.weak("Urutan • judul • artis • durasi");
@@ -53,38 +53,44 @@ impl StudioApp {
 
         let mut action = None;
         let last = self.tracks.len().saturating_sub(1);
-        for (index, track) in self.tracks.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.monospace(format!("{:02}", index + 1));
-                ui.add(egui::TextEdit::singleline(&mut track.title).desired_width(280.0));
-                ui.add(
-                    egui::TextEdit::singleline(&mut track.artist)
-                        .hint_text("Artis")
-                        .desired_width(170.0),
-                );
-                ui.label(format_clock(track.duration.round() as u64));
-                if track.lyrics.is_empty() {
-                    ui.weak("tanpa lirik");
-                } else {
-                    ui.label(format!("{} baris lirik", track.lyrics.len()));
-                }
-                if ui
-                    .add_enabled(index > 0, egui::Button::new("Naik").small())
-                    .clicked()
-                {
-                    action = Some(RowAction::MoveUp(index));
-                }
-                if ui
-                    .add_enabled(index < last, egui::Button::new("Turun").small())
-                    .clicked()
-                {
-                    action = Some(RowAction::MoveDown(index));
-                }
-                if ui.small_button("Hapus").clicked() {
-                    action = Some(RowAction::Remove(index));
+        egui::Grid::new("playlist_rows")
+            .striped(true)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                for (index, track) in self.tracks.iter_mut().enumerate() {
+                    ui.monospace(format!("{:02}", index + 1));
+                    ui.add(egui::TextEdit::singleline(&mut track.title).desired_width(260.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut track.artist)
+                            .hint_text("Artis")
+                            .desired_width(160.0),
+                    );
+                    ui.label(format_clock(track.duration.round() as u64));
+                    if track.lyrics.is_empty() {
+                        ui.weak("tanpa lirik");
+                    } else {
+                        ui.label(format!("{} baris", track.lyrics.len()));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(index > 0, egui::Button::new("Naik").small())
+                            .clicked()
+                        {
+                            action = Some(RowAction::MoveUp(index));
+                        }
+                        if ui
+                            .add_enabled(index < last, egui::Button::new("Turun").small())
+                            .clicked()
+                        {
+                            action = Some(RowAction::MoveDown(index));
+                        }
+                        if ui.small_button("Hapus").clicked() {
+                            action = Some(RowAction::Remove(index));
+                        }
+                    });
+                    ui.end_row();
                 }
             });
-        }
         match action {
             Some(RowAction::Remove(index)) => {
                 self.tracks.remove(index);
@@ -134,7 +140,7 @@ impl StudioApp {
         }
     }
 
-    fn load_audios(&mut self, paths: Vec<std::path::PathBuf>) {
+    pub(super) fn load_audios(&mut self, paths: Vec<std::path::PathBuf>) {
         let tools = self.tools.clone();
         self.spawn(async move {
             let mut results = Vec::new();
