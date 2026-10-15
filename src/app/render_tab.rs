@@ -17,7 +17,7 @@ use super::{help::render as help, theme, StudioApp};
 
 impl StudioApp {
     pub(super) fn render_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(ui, "Langkah 4 — Render & Ekspor Video", help::HEADING);
+        theme::heading_with_info(ui, "Render & Ekspor Video", help::HEADING);
         ui.add_space(4.0);
         ui.columns(2, |columns| {
             self.render_settings(&mut columns[0]);
@@ -137,7 +137,7 @@ impl StudioApp {
         ui.small("Angka kualitas makin kecil, gambar makin tajam, file makin besar.");
     }
 
-    fn job_section(&mut self, ui: &mut egui::Ui, job: &JobHandle) {
+    pub(super) fn job_section(&mut self, ui: &mut egui::Ui, job: &JobHandle) {
         let snapshot = job.snapshot();
         match snapshot.status {
             JobStatus::Queued | JobStatus::Preparing => {
@@ -189,6 +189,7 @@ impl StudioApp {
             return;
         };
         let request = RenderRequest {
+            custom_filename: self.custom_filename.clone(),
             video_path: background.video.path.clone().into(),
             image_source: background.image.clone().map(|path| ImageSource {
                 path,
@@ -224,6 +225,20 @@ impl StudioApp {
 
         let job = JobHandle::new();
         self.job = Some(job.clone());
+        let (width, height) = presets::dimensions(self.aspect_ratio, self.resolution);
+        self.log(
+            super::LogLevel::Info,
+            format!(
+                "Mulai render video: {width}x{height} @ {} FPS • Encoder: {} • Efek: {}",
+                self.fps,
+                self.encoder.name(),
+                EFFECTS[self.visual_effect].name
+            ),
+        );
+        if self.auto_generate_thumbnail {
+            self.generate_thumbnail();
+        }
+
         let ctx = self.ctx.clone();
         self.runtime.spawn(async move {
             render::execute(&context, &job, request).await;

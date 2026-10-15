@@ -31,6 +31,7 @@ fn workspace(label: &str) -> AppPaths {
 
 fn request(video: PathBuf, tracks: Vec<TrackData>, effect: &str) -> RenderRequest {
     RenderRequest {
+        custom_filename: String::new(),
         video_path: video,
         image_source: None,
         tracks,
@@ -192,10 +193,15 @@ async fn image_background_is_rebuilt_and_thumbnail_is_drawn() {
         number_style: "mirrored".into(),
         title_font_size: 120,
         track_font_size: 36,
+        subtitle_font_size: 80,
         vignette_opacity: 0.55,
         title_color: "#FFFFFF".into(),
         track_color: "#FFFFFF".into(),
         subtitle_color: "#FFD700".into(),
+        title_y_pct: 0.055,
+        subtitle_y_pct: 0.82,
+        title_font_path: None,
+        subtitle_font_path: None,
     };
     thumbnail::render(
         &tools,

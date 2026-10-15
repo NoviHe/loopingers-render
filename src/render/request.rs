@@ -21,6 +21,7 @@ pub struct ImageSource {
 
 #[derive(Debug, Clone)]
 pub struct RenderRequest {
+    pub custom_filename: String,
     pub video_path: PathBuf,
     pub image_source: Option<ImageSource>,
     pub tracks: Vec<TrackData>,

@@ -17,13 +17,13 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("LoopKaraoke Studio")
+            .with_title("Loopingers Render")
             .with_inner_size([1280.0, 840.0])
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "LoopKaraoke Studio",
+        "Loopingers Render",
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

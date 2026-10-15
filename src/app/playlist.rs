@@ -13,7 +13,7 @@ enum RowAction {
 
 impl StudioApp {
     pub(super) fn playlist_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(ui, "Langkah 2 — Daftar Lagu", help::HEADING);
+        theme::heading_with_info(ui, "Daftar Lagu (Playlist)", help::HEADING);
         ui.label(
             "Lagu digabung berurutan menjadi satu audio. Judul dan artis bisa diubah langsung.",
         );
@@ -37,6 +37,10 @@ impl StudioApp {
                 .clicked()
             {
                 self.timestamps_text = self.build_timestamps();
+                self.log(
+                    super::LogLevel::Success,
+                    "Timestamp YouTube berhasil dibuat dari urutan playlist.",
+                );
             }
             theme::info(ui, help::TIMESTAMPS);
         });
@@ -93,11 +97,28 @@ impl StudioApp {
             });
         match action {
             Some(RowAction::Remove(index)) => {
+                let title = self.tracks[index].title.clone();
                 self.tracks.remove(index);
                 self.selected_track = self.selected_track.min(self.tracks.len().saturating_sub(1));
+                self.log(
+                    super::LogLevel::Info,
+                    format!("Lagu \"{title}\" dihapus dari playlist."),
+                );
             }
-            Some(RowAction::MoveUp(index)) => self.tracks.swap(index, index - 1),
-            Some(RowAction::MoveDown(index)) => self.tracks.swap(index, index + 1),
+            Some(RowAction::MoveUp(index)) => {
+                self.tracks.swap(index, index - 1);
+                self.log(
+                    super::LogLevel::Info,
+                    "Urutan lagu diubah (lagu dinaikkan).",
+                );
+            }
+            Some(RowAction::MoveDown(index)) => {
+                self.tracks.swap(index, index + 1);
+                self.log(
+                    super::LogLevel::Info,
+                    "Urutan lagu diubah (lagu diturunkan).",
+                );
+            }
             None => {}
         }
 
@@ -151,7 +172,7 @@ impl StudioApp {
         });
     }
 
-    fn build_timestamps(&self) -> String {
+    pub(super) fn build_timestamps(&self) -> String {
         let sources: Vec<ChapterSource> = self
             .tracks
             .iter()

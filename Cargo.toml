@@ -1,6 +1,6 @@
 [package]
 name = "loopkaraoke-studio"
-version = "1.0.0"
+version = "2.0.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Loop video backgrounds, merge songs and burn word-by-word karaoke lyrics"
@@ -27,6 +27,7 @@ eframe = "0.32.3"
 egui_extras = { version = "0.32.3", features = ["file", "image"] }
 image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
 imageproc = "0.25.1"
+rand = "0.8.5"
 regex = "1.13.1"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }

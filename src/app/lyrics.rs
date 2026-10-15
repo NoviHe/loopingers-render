@@ -17,13 +17,13 @@ const LANGUAGES: [(&str, Option<&str>); 5] = [
 
 const PREVIEW_HEIGHT: f32 = 84.0;
 
-fn clock(seconds: f64) -> String {
+pub(super) fn clock(seconds: f64) -> String {
     format!("{:02}:{:05.2}", (seconds / 60.0) as u32, seconds % 60.0)
 }
 
 impl StudioApp {
     pub(super) fn lyrics_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(ui, "Langkah 3 — Lirik Karaoke & Gaya Teks", help::HEADING);
+        theme::heading_with_info(ui, "Lirik Karaoke & Gaya Teks", help::HEADING);
         ui.add_space(4.0);
         ui.columns(2, |columns| {
             if self.tracks.is_empty() {
@@ -112,7 +112,7 @@ impl StudioApp {
         }
     }
 
-    fn whisper_settings(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn whisper_settings(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             theme::label_with_info(ui, "Model:", help::MODEL);
             egui::ComboBox::from_id_salt("whisper_model")
@@ -154,7 +154,7 @@ impl StudioApp {
         }
     }
 
-    fn lrc_import(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn lrc_import(&mut self, ui: &mut egui::Ui) {
         theme::strong_with_info(ui, "File atau teks LRC", help::LRC);
         if ui.button("Impor file .lrc / .txt...").clicked() {
             let picked = rfd::FileDialog::new()
@@ -196,7 +196,7 @@ impl StudioApp {
         self.info(format!("{count} baris lirik diterapkan."));
     }
 
-    fn transcribe_track(&mut self, index: usize) {
+    pub(super) fn transcribe_track(&mut self, index: usize) {
         let use_gpu = self.use_gpu
             && self
                 .hardware
@@ -212,7 +212,14 @@ impl StudioApp {
             return;
         }
         track.transcribing = true;
-        let (id, path) = (track.id, track.path.clone());
+        let (id, path, title) = (track.id, track.path.clone(), track.title.clone());
+        self.log(
+            super::LogLevel::Info,
+            format!(
+                "Memulai transkripsi Whisper AI untuk \"{title}\" (model: {})...",
+                self.whisper_model.name()
+            ),
+        );
 
         let (tools, models) = (self.tools.clone(), self.paths.models.clone());
         let (transcriber, slot) = (self.transcriber.clone(), self.transcribe_slot.clone());
@@ -226,7 +233,7 @@ impl StudioApp {
         });
     }
 
-    fn style_section(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn style_section(&mut self, ui: &mut egui::Ui) {
         theme::strong_with_info(ui, "Gaya teks karaoke", help::STYLE);
         self.style_preview(ui);
         ui.add_space(4.0);
@@ -290,7 +297,7 @@ impl StudioApp {
     }
 
     /// A small mock frame that shows the chosen colors, size and position before rendering.
-    fn style_preview(&self, ui: &mut egui::Ui) {
+    pub(super) fn style_preview(&self, ui: &mut egui::Ui) {
         const SAMPLE: &str = "Contoh lirik karaoke";
         let style = &self.style;
         let (rect, _) = ui.allocate_exact_size(

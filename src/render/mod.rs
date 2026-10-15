@@ -137,9 +137,16 @@ async fn run_pipeline(
         job.encoder_name = encoder.label(&hardware.gpu_name);
     });
 
-    let output = paths
-        .outputs
-        .join(format!("karaoke_video_{}.mp4", job.id()));
+    let file_name = if request.custom_filename.trim().is_empty() {
+        format!("loopingers_render_{}.mp4", job.id())
+    } else {
+        let clean_prefix = request
+            .custom_filename
+            .trim()
+            .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        format!("{clean_prefix}_loopingers_render_{}.mp4", job.id())
+    };
+    let output = paths.outputs.join(file_name);
     let effect = AppliedEffect::resolve(effect_id, &paths.effects);
     LoopRender {
         tools,

@@ -37,10 +37,15 @@ pub struct ThumbnailSpec {
     pub number_style: String,
     pub title_font_size: u32,
     pub track_font_size: u32,
+    pub subtitle_font_size: u32,
     pub vignette_opacity: f32,
     pub title_color: String,
     pub track_color: String,
     pub subtitle_color: String,
+    pub title_y_pct: f32,
+    pub subtitle_y_pct: f32,
+    pub title_font_path: Option<PathBuf>,
+    pub subtitle_font_path: Option<PathBuf>,
 }
 
 /// Grabs one frame at `timestamp`, scaled and cropped to 1920x1080 when FFmpeg allows it.
@@ -136,23 +141,22 @@ pub async fn render(
 }
 
 fn draw(background: &Path, spec: &ThumbnailSpec, output: &Path) -> Result<()> {
-    let fonts = Fonts::load()?;
+    let fonts = Fonts::load_for_spec(spec)?;
     let mut canvas = load_background(background);
     apply_vignette(&mut canvas, spec.vignette_opacity);
 
     let title_scale = fonts.title.scale(spec.title_font_size);
     let track_scale = fonts.track.scale(spec.track_font_size);
-    let subtitle_scale = fonts
-        .subtitle
-        .scale((f64::from(spec.title_font_size) * 0.72) as u32);
+    let subtitle_scale = fonts.subtitle.scale(spec.subtitle_font_size);
 
     if !spec.title.trim().is_empty() {
+        let title_y = (f64::from(HEIGHT) * f64::from(spec.title_y_pct)) as i32;
         draw_outlined(
             &mut canvas,
             &fonts.title.font,
             title_scale,
             spec.title.trim(),
-            (WIDTH as i32 / 2, (f64::from(HEIGHT) * 0.055) as i32),
+            (WIDTH as i32 / 2, title_y),
             Align::Center,
             parse_color(&spec.title_color),
             5,
@@ -174,12 +178,13 @@ fn draw(background: &Path, spec: &ThumbnailSpec, output: &Path) -> Result<()> {
     }
 
     if !spec.subtitle.trim().is_empty() {
+        let subtitle_y = (f64::from(HEIGHT) * f64::from(spec.subtitle_y_pct)) as i32;
         draw_outlined(
             &mut canvas,
             &fonts.subtitle.font,
             subtitle_scale,
             spec.subtitle.trim(),
-            (WIDTH as i32 / 2, (f64::from(HEIGHT) * 0.82) as i32),
+            (WIDTH as i32 / 2, subtitle_y),
             Align::Center,
             parse_color(&spec.subtitle_color),
             3,
@@ -249,21 +254,21 @@ fn apply_vignette(canvas: &mut RgbImage, opacity: f32) {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Align {
+pub enum Align {
     Left,
     Center,
     Right,
 }
 
-#[derive(Debug, PartialEq)]
-struct TrackRow {
-    text: String,
-    x: i32,
-    y: i32,
-    align: Align,
+#[derive(Debug, PartialEq, Clone)]
+pub struct TrackRow {
+    pub text: String,
+    pub x: i32,
+    pub y: i32,
+    pub align: Align,
 }
 
-fn shorten(title: &str, limit: usize) -> String {
+pub fn shorten(title: &str, limit: usize) -> String {
     if title.chars().count() > limit {
         let kept: String = title.chars().take(limit - 2).collect();
         format!("{kept}...")
@@ -273,7 +278,7 @@ fn shorten(title: &str, limit: usize) -> String {
 }
 
 /// Positions the track list: one column on the left, or two columns when there are many tracks.
-fn layout_tracks(spec: &ThumbnailSpec) -> Vec<TrackRow> {
+pub fn layout_tracks(spec: &ThumbnailSpec) -> Vec<TrackRow> {
     let tracks = &spec.track_titles;
     let two_columns = match spec.column_mode.as_str() {
         "2" => true,
@@ -409,13 +414,40 @@ struct Fonts {
 }
 
 impl Fonts {
-    fn load() -> Result<Self> {
+    fn load_for_spec(spec: &ThumbnailSpec) -> Result<Self> {
+        let title = if let Some(path) = &spec.title_font_path {
+            load_font_file(path).unwrap_or_else(|_| {
+                load_font(&["impact.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"]).unwrap()
+            })
+        } else {
+            load_font(&["impact.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"])?
+        };
+
+        let subtitle = if let Some(path) = &spec.subtitle_font_path {
+            load_font_file(path).unwrap_or_else(|_| {
+                load_font(&["segoesc.ttf", "ariali.ttf", "arial.ttf", "DejaVuSans.ttf"]).unwrap()
+            })
+        } else {
+            load_font(&["segoesc.ttf", "ariali.ttf", "arial.ttf", "DejaVuSans.ttf"])?
+        };
+
+        let track = load_font(&["arialbd.ttf", "DejaVuSans-Bold.ttf"])?;
+
         Ok(Self {
-            title: load_font(&["impact.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"])?,
-            track: load_font(&["arialbd.ttf", "DejaVuSans-Bold.ttf"])?,
-            subtitle: load_font(&["segoesc.ttf", "ariali.ttf", "arial.ttf", "DejaVuSans.ttf"])?,
+            title,
+            track,
+            subtitle,
         })
     }
+}
+
+fn load_font_file(path: &Path) -> Result<LoadedFont> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        Error::internal(format!("Gagal membaca berkas font {}: {e}", path.display()))
+    })?;
+    let font = FontVec::try_from_vec(bytes)
+        .map_err(|_| Error::internal(format!("Format font tidak valid: {}", path.display())))?;
+    Ok(LoadedFont { font })
 }
 
 fn font_dirs() -> Vec<PathBuf> {
@@ -461,10 +493,15 @@ mod tests {
             number_style: style.into(),
             title_font_size: 120,
             track_font_size: 36,
+            subtitle_font_size: 80,
             vignette_opacity: 0.55,
             title_color: "#FFFFFF".into(),
             track_color: "#FFFFFF".into(),
             subtitle_color: "#FFD700".into(),
+            title_y_pct: 0.055,
+            subtitle_y_pct: 0.82,
+            title_font_path: None,
+            subtitle_font_path: None,
         }
     }
 

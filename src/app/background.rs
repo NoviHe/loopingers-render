@@ -20,7 +20,7 @@ use loopkaraoke::{
 use super::{help::background as help, theme, Event, StudioApp};
 
 pub(super) const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "mov", "mkv", "webm", "avi"];
-pub(super) const IMAGE_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
+pub(super) const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "jfif"];
 const IMAGE_CLIP_SECONDS: f64 = 10.0;
 const IMAGE_CLIP_FPS: u32 = 30;
 
@@ -83,11 +83,7 @@ async fn build_image_background(
 
 impl StudioApp {
     pub(super) fn background_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(
-            ui,
-            "Langkah 1 — Video atau Gambar Background",
-            help::HEADING,
-        );
+        theme::heading_with_info(ui, "Video atau Gambar Background", help::HEADING);
         ui.label("Video diulang otomatis sepanjang total durasi lagu. Gambar diubah menjadi video bergerak.");
         ui.add_space(4.0);
         ui.columns(2, |columns| {
@@ -125,7 +121,7 @@ impl StudioApp {
 
         let frame = egui::Frame::new()
             .fill(theme::FIELD_BG)
-            .stroke(egui::Stroke::new(1.0, theme::FIELD_BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, theme::FIELD_BORDER))
             .corner_radius(4)
             .inner_margin(egui::Margin::same(12));
         let Some(background) = &self.background else {
@@ -244,7 +240,7 @@ impl StudioApp {
         });
     }
 
-    fn load_demo(&mut self) {
+    pub(super) fn load_demo(&mut self) {
         let (tools, dir) = (self.tools.clone(), self.paths.temp.join("demo"));
         self.spawn(async move { Event::Demo(demo::generate(&tools, &dir).await) });
     }

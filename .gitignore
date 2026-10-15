@@ -9,6 +9,7 @@
 
 # Release packaging
 /dist/
+/tools/
 
 # IDE / OS
 .vscode/

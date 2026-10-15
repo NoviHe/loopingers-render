@@ -40,10 +40,10 @@ pub fn apply(ctx: &egui::Context) {
     visuals.faint_bg_color = ROW_ALT;
     visuals.override_text_color = Some(TEXT);
     visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
     visuals.hyperlink_color = FOCUS;
     visuals.error_fg_color = DANGER;
-    visuals.window_stroke = Stroke::new(1.0, FIELD_BORDER);
+    visuals.window_stroke = Stroke::new(1.0_f32, FIELD_BORDER);
     visuals.window_corner_radius = CornerRadius::same(6);
     visuals.menu_corner_radius = CornerRadius::same(6);
     visuals.popup_shadow = Shadow {
@@ -66,19 +66,19 @@ pub fn apply(ctx: &egui::Context) {
     }
     widgets.noninteractive.bg_fill = PANEL_BG;
     widgets.noninteractive.weak_bg_fill = PANEL_BG;
-    widgets.noninteractive.bg_stroke = Stroke::new(1.0, SEPARATOR);
-    widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, SEPARATOR);
+    widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     widgets.inactive.bg_fill = FIELD_BG;
     widgets.inactive.weak_bg_fill = FIELD_BG;
-    widgets.inactive.bg_stroke = Stroke::new(1.0, FIELD_BORDER);
-    widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.inactive.bg_stroke = Stroke::new(1.0_f32, FIELD_BORDER);
+    widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     widgets.hovered.bg_fill = HOVER;
     widgets.hovered.weak_bg_fill = HOVER;
-    widgets.hovered.bg_stroke = Stroke::new(1.0, FIELD_BORDER);
-    widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_gray(0xe6));
+    widgets.hovered.bg_stroke = Stroke::new(1.0_f32, FIELD_BORDER);
+    widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::from_gray(0xe6));
     widgets.active.bg_fill = PRESSED;
     widgets.active.weak_bg_fill = PRESSED;
-    widgets.active.fg_stroke = Stroke::new(1.0, Color32::from_gray(0xe6));
+    widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::from_gray(0xe6));
     widgets.open.bg_fill = HOVER;
     widgets.open.weak_bg_fill = HOVER;
     ctx.set_visuals(visuals);
@@ -140,7 +140,7 @@ pub fn header_tab(ui: &mut egui::Ui, title: &str, active: bool, done: bool, hint
                 egui::pos2(rect.min.x + 10.0, y),
                 egui::pos2(rect.max.x - 10.0, y),
             ],
-            Stroke::new(2.0, Color32::from_gray(0xe6)),
+            Stroke::new(2.0_f32, Color32::from_gray(0xe6)),
         );
     }
     let clicked = response.clicked();
@@ -154,7 +154,7 @@ pub fn info(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::hover());
     let color = if response.hovered() { FOCUS } else { TEXT_DIM };
     let painter = ui.painter();
-    painter.circle_stroke(rect.center(), 6.5, Stroke::new(1.0, color));
+    painter.circle_stroke(rect.center(), 6.5, Stroke::new(1.0_f32, color));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
