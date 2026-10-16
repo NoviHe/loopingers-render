@@ -15,7 +15,7 @@ name = "loopkaraoke-studio"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["vulkan"]
 cuda = ["whisper-rs/cuda"]
 vulkan = ["whisper-rs/vulkan"]
 

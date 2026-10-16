@@ -28,16 +28,22 @@ pub enum ModelSize {
     Tiny,
     Base,
     Small,
+    Medium,
 }
 
 impl ModelSize {
+    #[cfg(not(any(feature = "cuda", feature = "vulkan")))]
     pub const ALL: [Self; 3] = [Self::Tiny, Self::Base, Self::Small];
+
+    #[cfg(any(feature = "cuda", feature = "vulkan"))]
+    pub const ALL: [Self; 4] = [Self::Tiny, Self::Base, Self::Small, Self::Medium];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Tiny => "tiny",
             Self::Base => "base",
             Self::Small => "small",
+            Self::Medium => "medium",
         }
     }
 
@@ -266,7 +272,19 @@ mod tests {
     #[test]
     fn model_file_names_follow_the_ggml_convention() {
         assert_eq!(ModelSize::Small.file_name(), "ggml-small.bin");
-        assert_eq!(ModelSize::ALL.len(), 3);
+        assert_eq!(ModelSize::Medium.file_name(), "ggml-medium.bin");
+        assert_eq!(
+            ModelSize::ALL.contains(&ModelSize::Medium),
+            cfg!(any(feature = "cuda", feature = "vulkan"))
+        );
+        assert_eq!(
+            ModelSize::ALL.len(),
+            if cfg!(any(feature = "cuda", feature = "vulkan")) {
+                4
+            } else {
+                3
+            }
+        );
     }
 
     #[test]

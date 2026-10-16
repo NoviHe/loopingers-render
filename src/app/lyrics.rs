@@ -113,6 +113,9 @@ impl StudioApp {
     }
 
     pub(super) fn whisper_settings(&mut self, ui: &mut egui::Ui) {
+        if !ModelSize::ALL.contains(&self.whisper_model) {
+            self.whisper_model = ModelSize::Base;
+        }
         ui.horizontal_wrapped(|ui| {
             theme::label_with_info(ui, "Model:", help::MODEL);
             egui::ComboBox::from_id_salt("whisper_model")

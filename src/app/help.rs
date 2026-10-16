@@ -40,6 +40,9 @@ pub mod lyrics {
     pub const HEADING: &str = "Lirik dibuat otomatis oleh Whisper AI atau diimpor dari file LRC, lalu dibakar ke video dengan efek sapuan kata demi kata.";
     pub const TRACK: &str = "Lirik diatur per lagu. Pilih lagu yang ingin diberi lirik.";
     pub const WHISPER: &str = "Whisper adalah AI pengenal suara yang mendengarkan lagu dan membuat lirik berstempel waktu per kata. Berjalan di komputer sendiri.";
+    #[cfg(any(feature = "cuda", feature = "vulkan"))]
+    pub const MODEL: &str = "Model lebih besar lebih akurat tetapi lebih lambat dan lebih besar untuk diunduh: tiny sekitar 75 MB, base 142 MB, small 466 MB, medium 1.5 GB.";
+    #[cfg(not(any(feature = "cuda", feature = "vulkan")))]
     pub const MODEL: &str = "Model lebih besar lebih akurat tetapi lebih lambat dan lebih besar untuk diunduh: tiny sekitar 75 MB, base 142 MB, small 466 MB.";
     pub const LANGUAGE: &str = "Bahasa lirik. Memilih bahasa yang benar membuat hasil lebih akurat; \"Deteksi otomatis\" membiarkan Whisper menebak.";
     pub const GPU: &str = "Mempercepat Whisper dengan GPU. Hanya aktif bila build ini mendukungnya (--features cuda atau vulkan); jika tidak, Whisper berjalan di CPU.";
