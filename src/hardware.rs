@@ -16,6 +16,7 @@ pub struct HardwareInfo {
     pub nvenc_hevc: bool,
     pub amf_h264: bool,
     pub amf_hevc: bool,
+    pub cpu_x265: bool,
     /// Whisper can run on the GPU (build with the `cuda` or `vulkan` feature).
     pub gpu_whisper: bool,
 }
@@ -23,11 +24,12 @@ pub struct HardwareInfo {
 impl HardwareInfo {
     pub async fn detect(tools: &Tools) -> Self {
         let listed = list_encoders(tools).await;
-        let (nvenc_h264, nvenc_hevc, amf_h264, amf_hevc) = tokio::join!(
+        let (nvenc_h264, nvenc_hevc, amf_h264, amf_hevc, cpu_x265) = tokio::join!(
             encoder_works(tools, &listed, "h264_nvenc"),
             encoder_works(tools, &listed, "hevc_nvenc"),
             encoder_works(tools, &listed, "h264_amf"),
             encoder_works(tools, &listed, "hevc_amf"),
+            encoder_works(tools, &listed, "libx265"),
         );
         let adapters = adapter_names().await;
         let has_nvidia = nvenc_h264 || nvenc_hevc || mentions(&adapters, &["nvidia"]);
@@ -41,6 +43,7 @@ impl HardwareInfo {
             nvenc_hevc,
             amf_h264,
             amf_hevc,
+            cpu_x265,
             gpu_whisper: (has_nvidia || has_amd) && cfg!(any(feature = "cuda", feature = "vulkan")),
         }
     }

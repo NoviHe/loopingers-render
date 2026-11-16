@@ -9,3 +9,4 @@ pub mod render;
 pub mod storage;
 pub mod thumbnail;
 pub mod util;
+pub mod visualizer;

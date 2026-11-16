@@ -5,9 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ab_glyph::{Font, FontVec, PxScale};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use image::{
-    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ExtendedColorType, Rgb, RgbImage,
+    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ExtendedColorType, Rgb,
+    RgbImage, Rgba, RgbaImage,
 };
 use imageproc::drawing::{draw_text_mut, text_size};
 
@@ -195,6 +196,84 @@ fn draw(background: &Path, spec: &ThumbnailSpec, output: &Path) -> Result<()> {
     JpegEncoder::new_with_quality(BufWriter::new(file), JPEG_QUALITY)
         .encode(canvas.as_raw(), WIDTH, HEIGHT, ExtendedColorType::Rgb8)
         .map_err(|error| Error::internal(format!("Gagal menyimpan thumbnail: {error}")))
+}
+
+/// Renders the playlist tracklist overlay into a transparent PNG at `output` for video burning.
+pub fn render_overlay_png(
+    spec: &ThumbnailSpec,
+    width: u32,
+    height: u32,
+    output: &Path,
+) -> Result<()> {
+    let fonts = Fonts::load_for_spec(spec)?;
+    let mut canvas = RgbaImage::new(width, height);
+    if spec.vignette_opacity > 0.0 {
+        let alpha = vignette_alpha(width, height, spec.vignette_opacity);
+        for (pixel, &a) in canvas.pixels_mut().zip(&alpha) {
+            pixel.0 = [0, 0, 0, a];
+        }
+    }
+
+    let scale_x = width as f32 / WIDTH as f32;
+    let scale_y = height as f32 / HEIGHT as f32;
+    let scale = scale_x.min(scale_y);
+
+    let title_size = ((spec.title_font_size as f32 * scale).round() as u32).max(14);
+    let track_size = ((spec.track_font_size as f32 * scale).round() as u32).max(10);
+    let subtitle_size = ((spec.subtitle_font_size as f32 * scale).round() as u32).max(12);
+
+    let title_scale = fonts.title.scale(title_size);
+    let track_scale = fonts.track.scale(track_size);
+    let subtitle_scale = fonts.subtitle.scale(subtitle_size);
+
+    if !spec.title.trim().is_empty() {
+        let title_y = (f64::from(height) * f64::from(spec.title_y_pct)).round() as i32;
+        draw_outlined_rgba(
+            &mut canvas,
+            &fonts.title.font,
+            title_scale,
+            spec.title.trim(),
+            (width as i32 / 2, title_y),
+            Align::Center,
+            parse_color(&spec.title_color),
+            ((5.0 * scale).round() as i32).max(2),
+        );
+    }
+
+    let track_color = parse_color(&spec.track_color);
+    let track_outline = ((3.0 * scale).round() as i32).max(1);
+    for row in layout_tracks(spec) {
+        let rx = (row.x as f32 * scale_x).round() as i32;
+        let ry = (row.y as f32 * scale_y).round() as i32;
+        draw_outlined_rgba(
+            &mut canvas,
+            &fonts.track.font,
+            track_scale,
+            &row.text,
+            (rx, ry),
+            row.align,
+            track_color,
+            track_outline,
+        );
+    }
+
+    if !spec.subtitle.trim().is_empty() {
+        let subtitle_y = (f64::from(height) * f64::from(spec.subtitle_y_pct)).round() as i32;
+        draw_outlined_rgba(
+            &mut canvas,
+            &fonts.subtitle.font,
+            subtitle_scale,
+            spec.subtitle.trim(),
+            (width as i32 / 2, subtitle_y),
+            Align::Center,
+            parse_color(&spec.subtitle_color),
+            ((3.0 * scale).round() as i32).max(1),
+        );
+    }
+
+    canvas
+        .save(output)
+        .map_err(|error| Error::internal(format!("Gagal menyimpan overlay daftar lagu: {error}")))
 }
 
 fn load_background(path: &Path) -> RgbImage {
@@ -394,6 +473,111 @@ fn draw_outlined(
     draw_text_mut(canvas, color, x, y, scale, font, text);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_outlined_rgba(
+    canvas: &mut RgbaImage,
+    font: &FontVec,
+    scale: PxScale,
+    text: &str,
+    (x, y): (i32, i32),
+    align: Align,
+    color: Rgb<u8>,
+    outline: i32,
+) {
+    let (text_width, _) = text_size(scale, font, text);
+    let x = match align {
+        Align::Left => x,
+        Align::Center => x - (text_width / 2) as i32,
+        Align::Right => x - text_width as i32,
+    };
+    let black = Rgba([0, 0, 0, 255]);
+    for dx in -outline..=outline {
+        for dy in -outline..=outline {
+            if dx != 0 || dy != 0 {
+                draw_text_rgba(canvas, black, x + dx, y + dy, scale, font, text);
+            }
+        }
+    }
+    let shadow = outline.max(2);
+    draw_text_rgba(
+        canvas,
+        Rgba([0, 0, 0, 220]),
+        x + shadow,
+        y + shadow + 1,
+        scale,
+        font,
+        text,
+    );
+    draw_text_rgba(
+        canvas,
+        Rgba([color.0[0], color.0[1], color.0[2], 255]),
+        x,
+        y,
+        scale,
+        font,
+        text,
+    );
+}
+
+fn draw_text_rgba(
+    canvas: &mut RgbaImage,
+    color: Rgba<u8>,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    font: &FontVec,
+    text: &str,
+) {
+    let scaled = font.as_scaled(scale);
+    let v_advance = scaled.ascent();
+    let mut caret_x = 0.0_f32;
+    let mut last_glyph: Option<ab_glyph::GlyphId> = None;
+    let (w, h) = (canvas.width() as i32, canvas.height() as i32);
+
+    for ch in text.chars() {
+        if ch.is_control() {
+            continue;
+        }
+        let glyph_id = scaled.glyph_id(ch);
+        if let Some(prev) = last_glyph {
+            caret_x += scaled.kern(prev, glyph_id);
+        }
+        let glyph = glyph_id.with_scale_and_position(
+            scale,
+            ab_glyph::point(x as f32 + caret_x, y as f32 + v_advance),
+        );
+        caret_x += scaled.h_advance(glyph_id);
+        last_glyph = Some(glyph_id);
+
+        if let Some(outlined) = scaled.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, cov| {
+                let px = bounds.min.x as i32 + gx as i32;
+                let py = bounds.min.y as i32 + gy as i32;
+                if px >= 0 && px < w && py >= 0 && py < h && cov > 0.0 {
+                    let dst = canvas.get_pixel_mut(px as u32, py as u32);
+                    let sa = (f32::from(color.0[3]) / 255.0) * cov.clamp(0.0, 1.0);
+                    let da = f32::from(dst.0[3]) / 255.0;
+                    let out_a = sa + da * (1.0 - sa);
+                    if out_a > 0.0 {
+                        let blend = |s: u8, d: u8| -> u8 {
+                            ((f32::from(s) * sa + f32::from(d) * da * (1.0 - sa)) / out_a)
+                                .round()
+                                .clamp(0.0, 255.0) as u8
+                        };
+                        dst.0 = [
+                            blend(color.0[0], dst.0[0]),
+                            blend(color.0[1], dst.0[1]),
+                            blend(color.0[2], dst.0[2]),
+                            (out_a * 255.0).round().clamp(0.0, 255.0) as u8,
+                        ];
+                    }
+                }
+            });
+        }
+    }
+}
+
 struct LoadedFont {
     font: FontVec,
 }
@@ -542,5 +726,21 @@ mod tests {
         let middle_row = 50 * 200;
         assert!(alpha[middle_row] > alpha[middle_row + 40]);
         assert_eq!(alpha[middle_row + 100], 0);
+    }
+
+    #[test]
+    fn overlay_png_renders_transparent_tracklist() {
+        let mut s = spec(4, "auto", "mirrored");
+        s.vignette_opacity = 0.0;
+        let out =
+            std::env::temp_dir().join(format!("test_overlay_{}.png", crate::util::random_id(8)));
+        render_overlay_png(&s, 640, 360, &out).expect("render_overlay_png should succeed");
+        let img = image::open(&out).expect("open overlay png").to_rgba8();
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(img.dimensions(), (640, 360));
+        // Corner pixel should be completely transparent when vignette_opacity is 0.0
+        assert_eq!(img.get_pixel(0, 0).0[3], 0);
+        // Some pixels must be non-transparent (drawn title/tracks/subtitle)
+        assert!(img.pixels().any(|p| p.0[3] > 200));
     }
 }

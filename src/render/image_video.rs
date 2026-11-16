@@ -88,7 +88,7 @@ impl ImageVideo<'_> {
         .arg(self.duration.to_string())
         .arg("-filter_complex")
         .arg(&filter)
-        .args(["-map", "[outv]"])
+        .args(["-map", "[outv]", "-map_metadata", "-1"])
         .args(encoder.args("p4", 20))
         .arg("-r")
         .arg(self.fps.to_string())

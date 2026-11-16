@@ -115,6 +115,180 @@ pub fn format_clock(total_seconds: u64) -> String {
     }
 }
 
+/// YouTube timestamp format: `mm:ss`, switching to `h:mm:ss` once elapsed reaches one hour.
+pub fn format_youtube_timestamp(total_seconds: u64) -> String {
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+/// Millisecond-bounded chapter entry used for MP4 chapters and `Timestamp.txt`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedChapter {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub title: String,
+}
+
+fn clean_album_titles(titles: &[String]) -> Vec<String> {
+    titles
+        .iter()
+        .enumerate()
+        .map(|(idx, raw)| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                format!("Track {}", idx + 1)
+            } else {
+                clean_proper_title(trimmed)
+            }
+        })
+        .collect()
+}
+
+/// Computes MP4/YouTube chapter entries across the rendered duration, accounting for
+/// audio crossfades and optional manual duration looping.
+pub fn build_timed_chapters(
+    raw_titles: &[String],
+    durations: &[f64],
+    crossfade_secs: f64,
+    total_duration_secs: f64,
+) -> Vec<TimedChapter> {
+    if raw_titles.is_empty() {
+        return Vec::new();
+    }
+    let clean_titles = clean_album_titles(raw_titles);
+    let mut offsets = Vec::with_capacity(clean_titles.len());
+    let mut acc_dur = 0.0_f64;
+
+    for (idx, title) in clean_titles.iter().enumerate() {
+        let dur = durations.get(idx).copied().unwrap_or(0.0).max(0.0);
+        if idx == 0 {
+            offsets.push((0.0_f64, title.as_str()));
+            acc_dur = dur;
+        } else {
+            let safe_cf = if crossfade_secs > 0.0 {
+                crossfade_secs.min(acc_dur * 0.45).min(dur * 0.45)
+            } else {
+                0.0
+            };
+            if safe_cf >= 0.05 {
+                offsets.push(((acc_dur - safe_cf).max(0.0), title.as_str()));
+                acc_dur = (acc_dur + dur - safe_cf).max(0.05);
+            } else {
+                offsets.push((acc_dur, title.as_str()));
+                acc_dur += dur;
+            }
+        }
+    }
+
+    let target_secs = if total_duration_secs > 0.05 {
+        total_duration_secs
+    } else {
+        acc_dur
+    };
+    let total_ms = (target_secs * 1000.0).round() as u64;
+    if total_ms == 0 {
+        return Vec::new();
+    }
+
+    let mut chapters: Vec<TimedChapter> = Vec::new();
+    let mut cycle = 0usize;
+    loop {
+        let cycle_start = cycle as f64 * acc_dur;
+        if cycle > 0 && (cycle_start >= target_secs - 0.05 || acc_dur <= 0.05) {
+            break;
+        }
+        for &(offset, title) in &offsets {
+            let abs_ms = ((cycle_start + offset) * 1000.0).round() as u64;
+            if !chapters.is_empty() && abs_ms.saturating_add(1000) > total_ms {
+                break;
+            }
+            if chapters.is_empty() && abs_ms >= total_ms {
+                break;
+            }
+            let start_ms = chapters
+                .last()
+                .map_or(abs_ms, |prev| abs_ms.max(prev.start_ms + 1));
+            if start_ms >= total_ms && !chapters.is_empty() {
+                break;
+            }
+            chapters.push(TimedChapter {
+                start_ms,
+                end_ms: total_ms,
+                title: title.to_owned(),
+            });
+        }
+        if target_secs <= acc_dur + 0.05 {
+            break;
+        }
+        cycle += 1;
+    }
+
+    for idx in 0..chapters.len().saturating_sub(1) {
+        chapters[idx].end_ms = chapters[idx + 1].start_ms;
+    }
+    if let Some(last) = chapters.last_mut() {
+        last.end_ms = total_ms.max(last.start_ms + 1);
+    }
+    chapters
+}
+
+/// Formats `playlist.txt` with one clean track title per line.
+pub fn format_playlist_txt(raw_titles: &[String]) -> String {
+    clean_album_titles(raw_titles).join("\n")
+}
+
+/// Formats `Timestamp.txt` ready for a YouTube video description (`DAFTAR LAGU` + lines).
+pub fn format_timestamp_txt(chapters: &[TimedChapter]) -> String {
+    let mut lines = Vec::with_capacity(chapters.len() + 1);
+    lines.push("DAFTAR LAGU".to_owned());
+    for chapter in chapters {
+        let secs = (chapter.start_ms + 500) / 1000;
+        lines.push(format!(
+            "{} - {}",
+            format_youtube_timestamp(secs),
+            chapter.title
+        ));
+    }
+    lines.join("\n")
+}
+
+fn escape_ffmetadata(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '=' | ';' | '#' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Encodes `chapters` as FFmpeg `ffmetadata` (`;FFMETADATA1`) with 1 ms timebase.
+pub fn format_ffmetadata(chapters: &[TimedChapter]) -> String {
+    let mut out = String::from(";FFMETADATA1\n");
+    for chapter in chapters {
+        out.push_str("\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=");
+        out.push_str(&chapter.start_ms.to_string());
+        out.push_str("\nEND=");
+        out.push_str(&chapter.end_ms.to_string());
+        out.push_str("\ntitle=");
+        out.push_str(&escape_ffmetadata(&chapter.title));
+        out.push('\n');
+    }
+    out
+}
+
 /// The part of a track the chapter list needs.
 #[derive(Debug)]
 pub struct ChapterSource {
@@ -210,5 +384,58 @@ mod tests {
         assert_eq!(chapters[1].title, "Two");
         assert_eq!(chapters[2].time_str, "01:02:05");
         assert_eq!(chapters[2].title, "Track 3");
+    }
+
+    #[test]
+    fn formats_youtube_timestamps_switching_to_single_hour_digit() {
+        assert_eq!(format_youtube_timestamp(0), "00:00");
+        assert_eq!(format_youtube_timestamp(245), "04:05");
+        assert_eq!(format_youtube_timestamp(3599), "59:59");
+        assert_eq!(format_youtube_timestamp(3600), "1:00:00");
+        assert_eq!(format_youtube_timestamp(3725), "1:02:05");
+    }
+
+    #[test]
+    fn builds_timestamp_playlist_and_ffmetadata_for_ten_tracks() {
+        let titles: Vec<String> = (1..=10)
+            .map(|i| format!("{i:02}. lagu_test_{i}.mp3"))
+            .collect();
+        let durations = vec![245.0; 10];
+        let chapters = build_timed_chapters(&titles, &durations, 0.0, 2450.0);
+        assert_eq!(chapters.len(), 10);
+        assert_eq!(chapters[0].start_ms, 0);
+        assert_eq!(chapters[0].end_ms, 245_000);
+        assert_eq!(chapters[9].end_ms, 2_450_000);
+
+        let playlist = format_playlist_txt(&titles);
+        assert_eq!(playlist.lines().count(), 10);
+
+        let ts = format_timestamp_txt(&chapters);
+        let ts_lines: Vec<&str> = ts.lines().collect();
+        assert_eq!(ts_lines.len(), 11);
+        assert_eq!(ts_lines[0], "DAFTAR LAGU");
+        assert_eq!(ts_lines[1], "00:00 - Lagu Test 1");
+        assert_eq!(ts_lines[2], "04:05 - Lagu Test 2");
+        assert_eq!(ts_lines[10], "36:45 - Lagu Test 10");
+
+        let meta = format_ffmetadata(&chapters);
+        assert!(meta.starts_with(";FFMETADATA1\n"));
+        assert!(meta.contains("START=0\nEND=245000\ntitle=Lagu Test 1\n"));
+    }
+
+    #[test]
+    fn timed_chapters_handle_crossfade_and_manual_loop_past_one_hour() {
+        let titles = vec!["satu.mp3".into(), "dua#test=ok.mp3".into()];
+        let durations = vec![1800.0, 1850.0];
+        let chapters = build_timed_chapters(&titles, &durations, 5.0, 4000.0);
+        // Track 2 starts at 1800 - 5 = 1795s; cycle 2 starts at 3645s (> 1h -> h:mm:ss).
+        assert_eq!(chapters.len(), 3);
+        assert_eq!(chapters[1].start_ms, 1_795_000);
+        assert_eq!(chapters[2].start_ms, 3_645_000);
+        let ts = format_timestamp_txt(&chapters);
+        assert!(ts.contains("1:00:45 - Satu"));
+
+        let meta = format_ffmetadata(&chapters);
+        assert!(meta.contains("title=Dua\\#test\\=ok"));
     }
 }

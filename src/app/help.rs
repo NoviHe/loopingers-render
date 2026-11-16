@@ -7,13 +7,16 @@ pub const TAB_LYRICS: &str = "Langkah 3: buat atau impor lirik, lalu atur gaya t
 pub const TAB_RENDER: &str =
     "Langkah 4: gabungkan background, audio, dan lirik menjadi satu video.";
 pub const TAB_THUMBNAIL: &str = "Buat gambar sampul YouTube dari background dan daftar lagu.";
+pub const TAB_VISUALIZER: &str = "Buat visualizer musik reaktif audio (ala VIZ) dengan spektrum frekuensi, teks dinamis, logo, dan partikel.";
 pub const TAB_STORAGE: &str = "Lihat pemakaian disk dan bersihkan berkas yang tidak diperlukan.";
 
 pub mod background {
     pub const HEADING: &str = "Pilih video pendek atau gambar sebagai latar. Video diulang otomatis sampai lagu terakhir selesai; gambar diubah menjadi klip bergerak.";
     pub const PICK_VIDEO: &str = "Video pendek yang diulang sepanjang total durasi lagu. Video yang mulus saat diulang memberi hasil paling rapi.";
     pub const PICK_IMAGE: &str = "Gambar diam diubah menjadi klip 10 detik yang bergerak (zoom atau geser), lalu diulang seperti video.";
+    #[allow(dead_code)]
     pub const DEMO: &str = "Memuat video latar dan 2 lagu contoh berlirik supaya seluruh alur bisa dicoba tanpa menyiapkan file sendiri.";
+    #[allow(dead_code)]
     pub const OPEN_PLAYER: &str =
         "Membuka berkas background di pemutar bawaan sistem untuk memeriksanya.";
     pub const ASPECT: &str = "Bentuk layar video akhir: 16:9 untuk YouTube biasa, 9:16 untuk Shorts/Reels/TikTok, 1:1 untuk persegi. Bersama resolusi, ini menentukan ukuran keluaran.";
@@ -57,11 +60,14 @@ pub mod lyrics {
     pub const THEME: &str =
         "Preset warna siap pakai. Memilih tema mengisi warna di bawahnya, yang masih bisa diubah.";
     pub const COLORS: &str = "Normal: warna kata sebelum dinyanyikan. Saat bernyanyi: warna yang menyapu kata ketika dinyanyikan. Garis tepi dan bayangan menjaga teks tetap terbaca di atas background terang.";
+    pub const FONT_CHOICE: &str =
+        "Pilih jenis font lirik karaoke dari preset populer (Impact, Arial Black, Segoe UI, dll) atau unggah berkas font kustom (.ttf / .otf).";
     pub const FONT_SIZE: &str =
         "Ukuran huruf lirik pada video. Naikkan jika teks sulit dibaca di layar kecil.";
     pub const MARGIN: &str =
         "Jarak teks dari tepi layar, mengikuti posisi atas atau bawah yang dipilih.";
-    pub const POSITION: &str = "Letak lirik di layar: bawah, tengah, atau atas.";
+    pub const POSITION: &str =
+        "Letak teks lirik karaoke di layar: geser slider X (horizontal) dan Y (vertikal) secara leluasa atau gunakan preset cepat Bawah, Tengah, Atas.";
     pub const WIPE: &str = "Halus: warna menyapu kata secara mulus saat dinyanyikan. Per kata: seluruh kata berganti warna sekaligus.";
     pub const INTRO: &str =
         "Menampilkan judul dan nama penyanyi sebagai banner singkat di awal setiap lagu.";
@@ -94,6 +100,25 @@ pub mod thumbnail {
     pub const COLORS: &str =
         "Warna judul utama, daftar lagu, dan sub judul, berurutan dari kiri ke kanan.";
     pub const GENERATE: &str = "Membuat thumbnail dari background yang dipilih di langkah 1 dan menyimpannya di folder hasil.";
+}
+
+pub mod visualizer {
+    pub const HEADING: &str = "Studio Visualizer Musik: buat animasi visual spektrum audio yang bergerak mengikuti ritme lagu, atur gaya, warna, teks, logo, partikel, dan efek latar belakang.";
+    pub const PRESET: &str = "Bentuk visualizer spektrum: balok spektrum (bars), lingkaran memutar (radial NCS), lampu LED, gelombang halus, atau grid cyber.";
+    pub const POSITION: &str =
+        "Penempatan visualizer di layar: Tengah (Center), Bawah (Bottom), atau Layar Penuh (Full).";
+    pub const SIZE: &str = "Skala / ukuran visualizer terhadap kanvas video.";
+    pub const SENSITIVITY: &str =
+        "Tingkat sensitivitas / reaksi ketinggian spektrum terhadap volume dan ketukan audio.";
+    pub const ROTATION: &str =
+        "Sudut putaran visualizer. Tombol Rata 0° mengembalikan orientasi tegak lurus.";
+    pub const COLORS: &str = "Gradien warna spektrum: Warna A untuk bagian bawah/pangkal, dan Warna B untuk bagian atas/ujung.";
+    pub const BG_FX: &str = "Efek latar belakang: tingkat gelap (dim), keburaman (blur), warna nuansa (tint), getaran ketukan (pulse), dan bingkai neon RGB bercahaya.";
+    pub const TEXT: &str =
+        "Teks informasi lagu atau watermark kustom dengan efek neon glow dan bayangan.";
+    pub const OVERLAY: &str = "Gambar logo atau ikon kanal transparan yang ditempatkan di depan atau di belakang visualizer, dapat bergetar mengikuti ketukan.";
+    pub const PARTICLES: &str =
+        "Efek partikel animasi mengambang (bintik debu, bintang, percikan api, salju, hujan neon).";
 }
 
 pub mod storage {

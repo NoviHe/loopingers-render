@@ -22,6 +22,8 @@ pub struct VideoInfo {
     pub height: u32,
     pub fps: f64,
     pub aspect_ratio: String,
+    pub codec: String,
+    pub pix_fmt: String,
     pub has_audio: bool,
     pub size_bytes: u64,
     pub size_mb: f64,
@@ -57,6 +59,8 @@ struct Format {
 #[derive(Debug, Deserialize)]
 struct Stream {
     codec_type: Option<String>,
+    codec_name: Option<String>,
+    pix_fmt: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     avg_frame_rate: Option<String>,
@@ -151,6 +155,14 @@ pub async fn probe_video(tools: &Tools, path: &Path) -> Result<VideoInfo> {
     let video = probe.stream("video");
     let width = video.and_then(|stream| stream.width).unwrap_or(0);
     let height = video.and_then(|stream| stream.height).unwrap_or(0);
+    let codec = video
+        .and_then(|stream| stream.codec_name.clone())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let pix_fmt = video
+        .and_then(|stream| stream.pix_fmt.clone())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let fps = video
         .and_then(|stream| {
             [&stream.avg_frame_rate, &stream.r_frame_rate]
@@ -169,6 +181,8 @@ pub async fn probe_video(tools: &Tools, path: &Path) -> Result<VideoInfo> {
         height,
         fps,
         aspect_ratio: aspect_label(width, height),
+        codec,
+        pix_fmt,
         has_audio: probe.stream("audio").is_some(),
         size_bytes,
         size_mb,

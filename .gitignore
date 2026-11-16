@@ -17,5 +17,8 @@
 .DS_Store
 Thumbs.db
 
+# Binaries
+*.exe
+
 # Agent metadata
 .gemini/

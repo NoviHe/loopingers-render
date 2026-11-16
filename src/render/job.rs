@@ -26,6 +26,8 @@ pub struct RenderJob {
     pub encoder_name: String,
     pub error_message: String,
     pub output_file: Option<PathBuf>,
+    pub metadata_comment: Option<String>,
+    pub visual_label: Option<String>,
 }
 
 impl RenderJob {
@@ -41,6 +43,8 @@ impl RenderJob {
             encoder_name: String::new(),
             error_message: String::new(),
             output_file: None,
+            metadata_comment: None,
+            visual_label: None,
         }
     }
 

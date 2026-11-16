@@ -1,0 +1,43 @@
+{
+  "brand": "LoopKaraoke Studio",
+  "tagline": "Multi-track album video loop studio",
+  "brief": "Aplikasi desktop native (Rust & egui) untuk menggabungkan banyak lagu menjadi satu video album panjang dengan video/gambar latar yang di-looping otomatis, lengkap dengan lirik karaoke Whisper AI dan 49 efek visual.",
+  "adjectives": [
+    "Continuous",
+    "Layered",
+    "Rhythmic",
+    "Studio-grade"
+  ],
+  "criteria": "Jelas terbaca pada ukuran 16 px (ikon .exe/favicon), solid dalam satu warna, selaras dengan tema gelap aplikasi (#1D1D1D & #2F6BDF), dan memadukan huruf L, pita loop, serta tombol Play.",
+  "industry": "software",
+  "nav": [
+    "Fitur",
+    "Rilis",
+    "GitHub"
+  ],
+  "brand_color": "#2F6BDF",
+  "tile_color": "#141820",
+  "greyscale": false,
+  "final": true,
+  "deck_title": "final identity — Loop-L Frame",
+  "concepts": [
+    {
+      "name": "Loop-L Frame",
+      "symbol": "final-symbol.svg",
+      "lockup": "final-horizontal.svg",
+      "stacked": "final-stacked.svg",
+      "avatar": "final-symbol-small.svg",
+      "symbol_on_tile": "final-symbol-on-tile.svg",
+      "symbol_on_dark": "final-symbol-on-dark.svg",
+      "lockup_on_dark": "final-horizontal-on-dark.svg",
+      "stacked_on_dark": "final-stacked-on-dark.svg",
+      "idea": "Monogram huruf L dari pita loop searah jarum jam yang mengitari tombol Play (▶).",
+      "rationale": [
+        "Bingkai L berpanah 45° melambangkan video looping berulang tanpa henti dengan inisial LoopKaraoke.",
+        "Segitiga Play (30°/90°) berwarna Studio Blue (#2F6BDF) menarik fokus ke pemutaran kompilasi album.",
+        "Tersedia versi small-size (w=42) untuk ketajaman 16 px serta versi reversed tipis (w=36) untuk mode gelap."
+      ]
+    }
+  ],
+  "recommendation": "Sistem identitas final LoopKaraoke Studio siap dipakai di aplikasi Windows (.exe), GitHub README, web/PWA, dan media promosi dengan konsistensi warna antarmuka gelap."
+}

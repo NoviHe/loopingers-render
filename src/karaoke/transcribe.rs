@@ -204,7 +204,7 @@ fn collect_lines(state: &WhisperState, end_of_text: i32) -> Vec<LyricLine> {
         .as_iter()
         .filter_map(|segment| {
             let text = segment.to_str_lossy().ok()?.trim().to_owned();
-            if text.is_empty() {
+            if text.is_empty() || is_non_vocal_segment(&text) {
                 return None;
             }
             let start = segment.start_timestamp() as f64 / 100.0;
@@ -223,9 +223,11 @@ fn collect_lines(state: &WhisperState, end_of_text: i32) -> Vec<LyricLine> {
                 ))
             });
             let mut words = merge_tokens(pieces);
+            words.retain(|w| !is_non_vocal_segment(&w.word));
             if words.is_empty() {
                 words = spread_words(&text, start, (end - start).max(MIN_SEGMENT_SECONDS));
             }
+            tighten_word_timestamps(&mut words);
             let (first, last) = (words.first()?, words.last()?);
             Some(LyricLine {
                 start: first.start,
@@ -235,6 +237,53 @@ fn collect_lines(state: &WhisperState, end_of_text: i32) -> Vec<LyricLine> {
             })
         })
         .collect()
+}
+
+/// Detects Whisper non-vocal annotations (such as `[Music]`, `(Instrumental)`, `♪`)
+/// so instrumental intros and interludes are not emitted as sung lyric lines at 00:00.
+fn is_non_vocal_segment(text: &str) -> bool {
+    let trimmed = text
+        .trim()
+        .trim_matches(|c: char| matches!(c, '♪' | '♫' | '*' | '-' | '.' | ' '));
+    if trimmed.is_empty() {
+        return true;
+    }
+    let wrapped = (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'));
+    if wrapped {
+        return true;
+    }
+    false
+}
+
+/// Prevents Whisper DTW token timestamps from stretching the first word of a line
+/// all the way back to `00:00` across a musical intro or stretching across an instrumental gap.
+fn tighten_word_timestamps(words: &mut [LyricWord]) {
+    const MAX_FIRST_WORD_SPAN: f64 = 1.6;
+    const FIRST_WORD_LEAD_SECONDS: f64 = 0.65;
+    const MAX_INNER_WORD_SPAN: f64 = 2.2;
+    const LAST_WORD_TRAIL_SECONDS: f64 = 1.0;
+
+    let len = words.len();
+    if len == 0 {
+        return;
+    }
+
+    if words[0].end - words[0].start > MAX_FIRST_WORD_SPAN {
+        words[0].start = round2((words[0].end - FIRST_WORD_LEAD_SECONDS).max(0.0));
+    }
+
+    for i in 1..len {
+        let prev_end = words[i - 1].end;
+        let span = words[i].end - words[i].start;
+        if span > MAX_INNER_WORD_SPAN {
+            if i + 1 < len {
+                words[i].start = round2((words[i].end - FIRST_WORD_LEAD_SECONDS).max(prev_end));
+            } else {
+                words[i].end = round2(words[i].start + LAST_WORD_TRAIL_SECONDS);
+            }
+        }
+    }
 }
 
 /// Joins sub-word tokens into words. A token starting with a space opens a new word.
@@ -310,5 +359,30 @@ mod tests {
     fn backwards_token_times_never_end_before_they_start() {
         let words = merge_tokens([piece(" a", 2.0, 1.0)].into_iter());
         assert_eq!((words[0].start, words[0].end), (2.0, 2.0));
+    }
+
+    #[test]
+    fn non_vocal_segments_and_stretched_intro_tokens_are_handled() {
+        assert!(is_non_vocal_segment("[Music]"));
+        assert!(is_non_vocal_segment("(Instrumental)"));
+        assert!(is_non_vocal_segment("♪ ♫"));
+        assert!(!is_non_vocal_segment("Di tengah malam"));
+
+        let mut words = vec![
+            LyricWord {
+                word: "Di".to_owned(),
+                start: 0.0,
+                end: 12.4,
+            },
+            LyricWord {
+                word: "malam".to_owned(),
+                start: 12.4,
+                end: 25.0,
+            },
+        ];
+        tighten_word_timestamps(&mut words);
+        assert_eq!(words[0].start, 11.75);
+        assert_eq!(words[0].end, 12.4);
+        assert_eq!(words[1].end, 13.4);
     }
 }

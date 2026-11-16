@@ -33,6 +33,10 @@ pub struct RenderRequest {
     pub encoder: Encoder,
     pub preset: String,
     pub quality: u32,
+    pub audio_bitrate: String,
+    pub youtube_standard: bool,
     pub beat_pulse: bool,
     pub visual_effect: String,
+    pub visualizer: Option<crate::visualizer::VisualizerSpec>,
+    pub tracklist_overlay: Option<crate::thumbnail::ThumbnailSpec>,
 }

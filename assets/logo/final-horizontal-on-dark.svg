@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 256" width="960" height="256" role="img" aria-labelledby="title">
+  <title id="title">LoopKaraoke Studio horizontal lockup (dark)</title>
+  <g id="symbol" transform="translate(35.8, 50) scale(0.61)">
+    <path fill="#FFFFFF" d="M 36 29 H 58 A 7 7 0 0 1 65 36 V 185 A 7 7 0 0 0 72 192 H 178 A 13 13 0 0 0 191 179 V 81 A 13 13 0 0 0 178 68 H 111 V 72 L 89 50 L 111 28 V 32 H 182 A 45 45 0 0 1 227 77 V 183 A 45 45 0 0 1 182 228 H 48 A 19 19 0 0 1 29 209 V 36 A 7 7 0 0 1 36 29 Z"/>
+    <path fill="#5794EC" d="M 101 95 L 161.62 130 L 101 165 Z"/>
+  </g>
+  <g id="wordmark">
+    <path fill="#FFFFFF" d="M 227.8 94 H 239.88 V 151.03 H 265.88 V 162 H 227.8 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 273.02 128 A 35.7 35.7 0 1 1 344.42 128 A 35.7 35.7 0 1 1 273.02 128 Z M 285.1 128 A 23.62 23.62 0 1 0 332.34 128 A 23.62 23.62 0 1 0 285.1 128 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 352.92 128 A 35.7 35.7 0 1 1 424.32 128 A 35.7 35.7 0 1 1 352.92 128 Z M 365 128 A 23.62 23.62 0 1 0 412.24 128 A 23.62 23.62 0 1 0 365 128 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 435.54 94 H 463.04 A 21.42 21.42 0 1 1 463.04 136.84 H 447.62 V 162 H 435.54 Z M 447.62 104.97 V 125.87 H 463.04 A 10.45 10.45 0 1 0 463.04 104.97 Z"/>
+    <path fill="#FFFFFF" d="M 493.64 94 H 505.72 V 127.7 L 539.42 94 H 552.7 L 515.98 130.72 L 547.26 162 H 532.77 L 505.72 134.95 V 162 H 493.64 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 578.06 94 H 590.74 L 608.96 162 H 596.46 L 592.3 146.45 H 576.51 L 572.34 162 H 559.84 Z M 584.4 116.99 L 579.45 135.48 H 589.36 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 618.14 94 H 644.74 A 20.74 20.74 0 1 1 657.23 135.48 L 672.54 162 H 659.01 L 643.7 135.48 H 630.22 V 162 H 618.14 Z M 630.22 104.97 V 124.51 H 644.74 A 9.77 9.77 0 1 0 644.74 104.97 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 697.9 94 H 710.58 L 728.8 162 H 716.3 L 712.13 146.45 H 696.34 L 692.18 162 H 679.68 Z M 704.24 116.99 L 699.28 135.48 H 709.19 Z"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M 735.94 128 A 35.7 35.7 0 1 1 807.34 128 A 35.7 35.7 0 1 1 735.94 128 Z M 748.02 128 A 23.62 23.62 0 1 0 795.26 128 A 23.62 23.62 0 1 0 748.02 128 Z"/>
+    <path fill="#FFFFFF" d="M 816.52 94 H 828.6 V 127.7 L 862.3 94 H 875.58 L 838.86 130.72 L 870.14 162 H 855.65 L 828.6 134.95 V 162 H 816.52 Z"/>
+    <path fill="#FFFFFF" d="M 884.76 94 H 924.2 V 104.97 H 896.84 V 122.52 H 918.68 V 133.48 H 896.84 V 151.03 H 924.2 V 162 H 884.76 Z"/>
+  </g>
+</svg>

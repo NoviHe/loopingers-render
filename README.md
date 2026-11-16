@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/final-horizontal-on-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo/final-horizontal.svg" />
+    <img src="assets/logo/final-horizontal.svg" alt="LoopKaraoke Studio" height="64" />
+  </picture>
+</p>
+
 # LoopKaraoke Studio
 
 Aplikasi desktop native (`.exe`, ditulis dengan Rust dan egui — tanpa browser, tanpa HTML) untuk:
@@ -82,6 +90,7 @@ tests/               uji end-to-end
 examples/gen_effects generator video overlay
 assets/effects/      video overlay efek visual
 assets/fonts/        Inter dan JetBrains Mono (lisensi OFL)
+assets/logo/         logo, ikon aplikasi (.ico/.png/.svg), dan panduan identitas
 build.bat            build release dan paket zip
 ```
 

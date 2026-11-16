@@ -5,7 +5,7 @@ use loopkaraoke::{
     render::{
         self,
         effects::EFFECTS,
-        encoder::Encoder,
+        encoder::{Encoder, VideoTarget},
         job::{JobHandle, JobStatus},
         presets::{self, RESOLUTION_LABELS},
         request::{ImageSource, RenderRequest, TrackData},
@@ -65,10 +65,52 @@ impl StudioApp {
         egui::CollapsingHeader::new("Pengaturan lanjutan")
             .default_open(false)
             .show(ui, |ui| self.encoder_section(ui, &hardware));
+        ui.add_space(4.0);
+
+        theme::strong_with_info(ui, "Mode Daftar Lagu & Visual", help::PRESET);
+        ui.horizontal_wrapped(|ui| {
+            for mode in loopkaraoke::karaoke::ass::PlaylistDisplayMode::ALL {
+                if ui
+                    .selectable_label(self.playlist_mode == mode, mode.label())
+                    .clicked()
+                {
+                    self.playlist_mode = mode;
+                    if mode.includes_visual()
+                        && !self.show_tracklist_visual
+                        && !self.visualizer.enabled
+                    {
+                        self.show_tracklist_visual = true;
+                        self.visualizer.enabled = true;
+                    }
+                }
+            }
+        });
+        if self.playlist_mode.includes_visual() {
+            ui.checkbox(
+                &mut self.show_tracklist_visual,
+                format!(
+                    "Sertakan Daftar Judul Lagu (Tracklist) di Layar ({})",
+                    self.tracklist_position.label()
+                ),
+            );
+            ui.horizontal(|ui| {
+                ui.checkbox(
+                    &mut self.visualizer.enabled,
+                    "Sertakan Visualizer Musik pada Video",
+                );
+                if self.visualizer.enabled {
+                    ui.colored_label(
+                        theme::FOCUS,
+                        format!("(Bentuk: {})", self.visualizer.preset.label()),
+                    );
+                }
+            });
+        }
     }
 
     fn render_summary(&mut self, ui: &mut egui::Ui) {
-        let (width, height) = presets::dimensions(self.aspect_ratio, self.resolution);
+        let (aspect_ratio, resolution) = self.resolved_render_format();
+        let (width, height) = presets::dimensions(aspect_ratio, resolution);
         let without_lyrics = self
             .tracks
             .iter()
@@ -80,10 +122,14 @@ impl StudioApp {
             self.tracks.len(),
             format_clock(self.total_duration().round() as u64)
         ));
-        if without_lyrics > 0 {
+        ui.label(format!(
+            "Mode Daftar Lagu: {}",
+            self.playlist_mode.short_label()
+        ));
+        if self.playlist_mode.includes_lyrics() && without_lyrics > 0 {
             ui.colored_label(
                 theme::WARNING,
-                format!("{without_lyrics} lagu belum punya lirik; hanya banner judul yang tampil."),
+                format!("{without_lyrics} lagu belum punya lirik; hanya banner judul/daftar lagu yang tampil."),
             );
         }
         if let Some(reason) = self.render_blocker() {
@@ -184,10 +230,35 @@ impl StudioApp {
         }
     }
 
+    fn resolved_render_format(&self) -> (&'static str, &'static str) {
+        if self.video_settings.target == VideoTarget::YouTubeStandard {
+            let res = if self.resolution == "720p" {
+                "720p"
+            } else {
+                "1080p"
+            };
+            ("16:9", res)
+        } else {
+            (self.aspect_ratio, self.resolution)
+        }
+    }
+
     pub(super) fn start_render(&mut self) {
         let (Some(background), Some(hardware)) = (&self.background, &self.hardware) else {
             return;
         };
+        let (aspect_ratio, resolution) = self.resolved_render_format();
+        let encoder = if self.video_settings.target == VideoTarget::YouTubeStandard {
+            self.video_settings.resolve_encoder(hardware)
+        } else {
+            self.encoder
+        };
+        let preset = if self.video_settings.target == VideoTarget::YouTubeStandard {
+            self.video_settings.resolve_preset(encoder).to_owned()
+        } else {
+            self.preset.clone()
+        };
+        let audio_bitrate = self.video_settings.resolve_audio_bitrate("");
         let request = RenderRequest {
             custom_filename: self.custom_filename.clone(),
             video_path: background.video.path.clone().into(),
@@ -206,16 +277,24 @@ impl StudioApp {
                     lyrics: track.lyrics.clone(),
                 })
                 .collect(),
-            aspect_ratio: self.aspect_ratio.to_owned(),
-            resolution: self.resolution.to_owned(),
+            aspect_ratio: aspect_ratio.to_owned(),
+            resolution: resolution.to_owned(),
             fit: self.fit,
             fps: self.fps,
-            style: self.style.to_config(),
-            encoder: self.encoder,
-            preset: self.preset.clone(),
+            style: self.build_style_config(),
+            encoder,
+            preset,
             quality: self.quality,
+            audio_bitrate: audio_bitrate.clone(),
+            youtube_standard: self.video_settings.target == VideoTarget::YouTubeStandard,
             beat_pulse: self.beat_pulse,
             visual_effect: EFFECTS[self.visual_effect].id.to_owned(),
+            visualizer: None,
+            tracklist_overlay: if self.show_tracklist_visual && !self.tracks.is_empty() {
+                Some(self.build_thumbnail_spec(true))
+            } else {
+                None
+            },
         };
         let context = render::RenderContext {
             paths: self.paths.clone(),
@@ -225,13 +304,13 @@ impl StudioApp {
 
         let job = JobHandle::new();
         self.job = Some(job.clone());
-        let (width, height) = presets::dimensions(self.aspect_ratio, self.resolution);
+        let (width, height) = presets::dimensions(aspect_ratio, resolution);
         self.log(
             super::LogLevel::Info,
             format!(
-                "Mulai render video: {width}x{height} @ {} FPS • Encoder: {} • Efek: {}",
+                "Mulai render video: {width}x{height} @ {} FPS • Encoder: {} • Audio: {audio_bitrate} • Efek: {}",
                 self.fps,
-                self.encoder.name(),
+                encoder.name(),
                 EFFECTS[self.visual_effect].name
             ),
         );

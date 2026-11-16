@@ -134,6 +134,10 @@ pub struct ThumbnailState {
     pub track_size: u32,
     pub subtitle_size: u32,
     pub vignette: f32,
+    pub title_on_video: bool,
+    pub subtitle_on_video: bool,
+    pub tracklist_on_video: bool,
+    pub vignette_on_video: bool,
     pub title_color: [u8; 3],
     pub track_color: [u8; 3],
     pub subtitle_color: [u8; 3],
@@ -161,6 +165,10 @@ impl Default for ThumbnailState {
             track_size: 36,
             subtitle_size: 80,
             vignette: 0.55,
+            title_on_video: true,
+            subtitle_on_video: false,
+            tracklist_on_video: true,
+            vignette_on_video: false,
             title_color: [255, 255, 255],
             track_color: [255, 255, 255],
             subtitle_color: [255, 215, 0], // Gold #FFD700
@@ -188,6 +196,10 @@ impl ThumbnailState {
         self.track_size = 36;
         self.subtitle_size = 80;
         self.vignette = 0.55;
+        self.title_on_video = true;
+        self.subtitle_on_video = false;
+        self.tracklist_on_video = true;
+        self.vignette_on_video = false;
         self.title_color = [255, 255, 255];
         self.track_color = [255, 255, 255];
         self.subtitle_color = [255, 215, 0];
@@ -219,6 +231,76 @@ pub fn resolve_font_path(custom: &Option<PathBuf>, choice: &FontChoice) -> Optio
     }
 }
 
+pub fn extract_font_family_name(path: &std::path::Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 12 {
+        return None;
+    }
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let mut name_offset = None;
+    for i in 0..num_tables {
+        let off = 12 + i * 16;
+        if off + 16 > data.len() {
+            break;
+        }
+        if &data[off..off + 4] == b"name" {
+            name_offset = Some(u32::from_be_bytes([
+                data[off + 8],
+                data[off + 9],
+                data[off + 10],
+                data[off + 11],
+            ]) as usize);
+            break;
+        }
+    }
+    let name_off = name_offset?;
+    if name_off + 6 > data.len() {
+        return None;
+    }
+    let count = u16::from_be_bytes([data[name_off + 2], data[name_off + 3]]) as usize;
+    let str_off = u16::from_be_bytes([data[name_off + 4], data[name_off + 5]]) as usize;
+    let storage = name_off + str_off;
+
+    for i in 0..count {
+        let rec = name_off + 6 + i * 12;
+        if rec + 12 > data.len() {
+            break;
+        }
+        let plat = u16::from_be_bytes([data[rec], data[rec + 1]]);
+        let name_id = u16::from_be_bytes([data[rec + 6], data[rec + 7]]);
+        let len = u16::from_be_bytes([data[rec + 8], data[rec + 9]]) as usize;
+        let off = u16::from_be_bytes([data[rec + 10], data[rec + 11]]) as usize;
+
+        if name_id == 1 {
+            let start = storage + off;
+            if start + len <= data.len() {
+                let slice = &data[start..start + len];
+                if plat == 3 {
+                    // Windows Unicode (UTF-16 BE)
+                    let u16s: Vec<u16> = slice
+                        .chunks_exact(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect();
+                    if let Ok(s) = String::from_utf16(&u16s) {
+                        let trimmed = s.trim().to_string();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed);
+                        }
+                    }
+                } else if plat == 1 {
+                    // Mac Roman / ASCII / Latin1
+                    let s: String = slice.iter().map(|&b| b as char).collect();
+                    let trimmed = s.trim().to_string();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 impl StudioApp {
     pub(super) fn reload_egui_fonts(&self) {
         let mut extras: Vec<(&str, Vec<u8>)> = Vec::new();
@@ -230,6 +312,11 @@ impl StudioApp {
         if let Some(path) = &self.thumbnail.subtitle_custom_font {
             if let Ok(bytes) = std::fs::read(path) {
                 extras.push(("subtitle_custom", bytes));
+            }
+        }
+        if let Some(path) = &self.style.custom_font {
+            if let Ok(bytes) = std::fs::read(path) {
+                extras.push(("karaoke_custom", bytes));
             }
         }
         super::register_custom_fonts(&self.ctx, &extras);
@@ -279,12 +366,20 @@ impl StudioApp {
 
         // Card 1: Teks & Tipografi
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            let max_w = ui.available_width();
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
             ui.strong("1. Teks, Tipografi & Font");
             ui.add_space(4.0);
             let state = &mut self.thumbnail;
 
-            theme::label_with_info(ui, "Judul Utama:", help::TITLE);
+            ui.horizontal(|ui| {
+                theme::label_with_info(ui, "Judul Utama:", help::TITLE);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut state.title_on_video, "Tampilkan di Video")
+                        .on_hover_text("Jika dicentang, teks Judul Utama juga ditampilkan pada video; jika tidak, hanya tampil di Thumbnail.");
+                });
+            });
             ui.add(
                 egui::TextEdit::singleline(&mut state.title)
                     .hint_text("Misal: Powerful Worship")
@@ -292,7 +387,7 @@ impl StudioApp {
             );
 
             // Font Selector Judul Utama
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Font Judul:");
                 let current_title_label = if let Some(path) = &state.title_custom_font {
                     path.file_name()
@@ -345,7 +440,7 @@ impl StudioApp {
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Ukuran:", help::TITLE_SIZE);
                 ui.add(egui::Slider::new(&mut state.title_size, 40..=240));
                 ui.label("Posisi Y:");
@@ -355,7 +450,13 @@ impl StudioApp {
             });
             ui.add_space(8.0);
 
-            theme::label_with_info(ui, "Sub Judul / Artis / Branding:", help::SUBTITLE);
+            ui.horizontal(|ui| {
+                theme::label_with_info(ui, "Sub Judul / Artis / Branding:", help::SUBTITLE);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut state.subtitle_on_video, "Tampilkan di Video")
+                        .on_hover_text("Jika tidak dicentang, teks Sub Judul hanya tampil di Thumbnail dan tidak tampil di video.");
+                });
+            });
             ui.add(
                 egui::TextEdit::singleline(&mut state.subtitle)
                     .hint_text("Misal: Hillsong Worship")
@@ -363,7 +464,7 @@ impl StudioApp {
             );
 
             // Font Selector Sub Judul
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Font Sub Judul:");
                 let current_sub_label = if let Some(path) = &state.subtitle_custom_font {
                     path.file_name()
@@ -416,7 +517,7 @@ impl StudioApp {
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Ukuran:");
                 ui.add(egui::Slider::new(&mut state.subtitle_size, 20..=160));
                 ui.label("Posisi Y:");
@@ -434,11 +535,19 @@ impl StudioApp {
 
         // Card 2: Tata Letak Daftar Lagu (Tracklist)
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.strong("2. Tata Letak Daftar Lagu (Tracklist)");
-            ui.add_space(4.0);
+            let max_w = ui.available_width();
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
             let state = &mut self.thumbnail;
             ui.horizontal(|ui| {
+                ui.strong("2. Tata Letak Daftar Lagu (Tracklist)");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut state.tracklist_on_video, "Tampilkan di Video")
+                        .on_hover_text("Jika dicentang, daftar judul lagu (tracklist) juga ditampilkan pada video; jika tidak, hanya tampil di Thumbnail.");
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Mode Kolom:", help::COLUMNS);
                 egui::ComboBox::from_id_salt("thumbnail_columns_mode")
                     .selected_text(COLUMN_MODES[state.column_mode].1)
@@ -450,14 +559,14 @@ impl StudioApp {
             });
             ui.add_space(3.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Nomor Kolom Kanan:", help::NUMBERING);
                 ui.radio_value(&mut state.mirrored_numbers, true, "Cermin (Judul .01)");
                 ui.radio_value(&mut state.mirrored_numbers, false, "Berurutan (11. Judul)");
             });
             ui.add_space(3.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Ukuran Lagu:", help::TRACK_SIZE);
                 ui.add(egui::Slider::new(&mut state.track_size, 16..=64));
                 ui.label("Warna:");
@@ -468,7 +577,7 @@ impl StudioApp {
             if self.tracks.is_empty() {
                 ui.colored_label(
                     theme::FOCUS,
-                    "ℹ️ Belum ada lagu di playlist; menampilkan 19 lagu contoh (demo) seperti pada gambar referensi.",
+                    "ℹ Belum ada lagu di playlist; menampilkan 19 lagu contoh (demo) seperti pada gambar referensi.",
                 );
             } else {
                 ui.colored_label(
@@ -481,7 +590,9 @@ impl StudioApp {
 
         // Card 3: Latar Belakang & Vignette (Limit Sesuai Durasi Video)
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            let max_w = ui.available_width();
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
             ui.strong("3. Latar Belakang & Efek Visual");
             ui.add_space(4.0);
 
@@ -496,13 +607,13 @@ impl StudioApp {
             let mut trigger_extract = false;
             if let Some((img_name, vid_name, vid_duration)) = bg_info {
                 if let Some(name) = img_name {
-                    ui.label(format!("🖼️ Gambar latar: {name}"));
+                    ui.label(format!("🖼 Gambar latar: {name}"));
                 } else {
                     ui.label(format!("🎬 Video latar: {vid_name}"));
                     let max_dur = vid_duration.max(0.1);
                     self.thumbnail.timestamp = self.thumbnail.timestamp.clamp(0.0, max_dur);
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         theme::label_with_info(ui, "Ambil frame detik:", help::FRAME);
                         ui.add(
                             egui::Slider::new(&mut self.thumbnail.timestamp, 0.0..=max_dur)
@@ -519,7 +630,7 @@ impl StudioApp {
                             trigger_extract = true;
                         }
                     });
-                    ui.small(format!("⏱️ Batas waktu frame sesuai durasi video: 0.0s – {:.1}s", max_dur));
+                    ui.small(format!("⏱ Batas waktu frame sesuai durasi video: 0.0s – {:.1}s", max_dur));
                 }
             } else {
                 ui.weak("Belum ada video/gambar background dipilih di Main Menu.");
@@ -535,6 +646,10 @@ impl StudioApp {
             ui.horizontal(|ui| {
                 theme::label_with_info(ui, "Gelap di Tepi (Vignette):", help::VIGNETTE);
                 ui.add(egui::Slider::new(&mut self.thumbnail.vignette, 0.0..=1.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.thumbnail.vignette_on_video, "Tampilkan di Video")
+                        .on_hover_text("Jika tidak dicentang, efek gelap di tepi (vignette) hanya tampil di Thumbnail dan tidak tampil di video.");
+                });
             });
             ui.small("Membantu teks putih dan emas terlihat kontras dan terbaca jelas pada latar terang.");
         });
@@ -542,13 +657,15 @@ impl StudioApp {
 
         // Card 4: Ekspor Thumbnail
         frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            let max_w = ui.available_width();
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
             ui.strong("4. Simpan & Ekspor Berkas");
             ui.add_space(4.0);
 
             let busy = self.thumbnail.busy;
             let btn = if busy {
-                egui::Button::new("⏳ Sedang Merender Thumbnail...")
+                theme::StyledButton::secondary("⏳ Sedang Merender Thumbnail...")
             } else {
                 theme::primary_button("🚀 Buat Thumbnail Full HD (1920x1080)")
             };
@@ -579,6 +696,9 @@ impl StudioApp {
             .inner_margin(egui::Margin::same(12));
 
         frame.show(ui, |ui| {
+            let max_w = ui.available_width();
+            ui.set_width(max_w);
+            ui.set_max_width(max_w);
             ui.horizontal(|ui| {
                 ui.strong("Pratinjau Langsung (Canvas 16:9)");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -606,7 +726,7 @@ impl StudioApp {
                 ui.colored_label(theme::SUCCESS, "✓ Berkas Thumbnail Berhasil Dibuat:");
                 ui.label(path.display().to_string());
                 ui.horizontal(|ui| {
-                    if ui.button("🖼️ Buka Gambar").clicked() {
+                    if ui.button("🖼 Buka Gambar").clicked() {
                         let _ = open_path(&path);
                     }
                     if ui.button("📁 Buka Folder Output").clicked() {
@@ -618,10 +738,9 @@ impl StudioApp {
     }
 
     fn render_thumbnail_canvas(&mut self, ui: &mut egui::Ui) {
-        let avail_w = ui.available_width().max(280.0);
+        let avail_w = ui.available_width().max(180.0);
         let canvas_w = avail_w;
         let canvas_h = canvas_w * (9.0 / 16.0);
-        let scale = canvas_w / 1920.0;
 
         let (rect, _response) =
             ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::hover());
@@ -660,13 +779,19 @@ impl StudioApp {
         }
 
         let painter = ui.painter_at(rect);
+        self.draw_thumbnail_overlay(&painter, rect, true);
+    }
 
-        // Vignette overlay
-        draw_vignette(&painter, rect, self.thumbnail.vignette);
-
-        // Gather track titles
-        let track_titles: Vec<String> = if self.tracks.is_empty() {
-            DEMO_TRACKS.iter().map(|&s| s.to_string()).collect()
+    pub(super) fn build_thumbnail_spec(&self, for_video: bool) -> ThumbnailSpec {
+        let state = &self.thumbnail;
+        let track_titles: Vec<String> = if for_video && !state.tracklist_on_video {
+            Vec::new()
+        } else if self.tracks.is_empty() {
+            if for_video {
+                Vec::new()
+            } else {
+                DEMO_TRACKS.iter().map(|&s| s.to_string()).collect()
+            }
         } else {
             self.tracks
                 .iter()
@@ -674,7 +799,6 @@ impl StudioApp {
                 .collect()
         };
 
-        let state = &self.thumbnail;
         let title_font_path = resolve_font_path(
             &state.title_custom_font,
             &TITLE_FONTS[state.title_font_preset],
@@ -684,9 +808,17 @@ impl StudioApp {
             &SUBTITLE_FONTS[state.subtitle_font_preset],
         );
 
-        let spec = ThumbnailSpec {
-            title: state.title.clone(),
-            subtitle: state.subtitle.clone(),
+        ThumbnailSpec {
+            title: if !for_video || state.title_on_video {
+                state.title.clone()
+            } else {
+                String::new()
+            },
+            subtitle: if !for_video || state.subtitle_on_video {
+                state.subtitle.clone()
+            } else {
+                String::new()
+            },
             track_titles,
             column_mode: COLUMN_MODES[state.column_mode].0.to_owned(),
             number_style: if state.mirrored_numbers {
@@ -698,7 +830,11 @@ impl StudioApp {
             title_font_size: state.title_size,
             track_font_size: state.track_size,
             subtitle_font_size: state.subtitle_size,
-            vignette_opacity: state.vignette,
+            vignette_opacity: if !for_video || state.vignette_on_video {
+                state.vignette
+            } else {
+                0.0
+            },
             title_color: hex(state.title_color),
             track_color: hex(state.track_color),
             subtitle_color: hex(state.subtitle_color),
@@ -706,7 +842,33 @@ impl StudioApp {
             subtitle_y_pct: state.subtitle_y_pct,
             title_font_path,
             subtitle_font_path,
-        };
+        }
+    }
+
+    /// Menggambar overlay judul/daftar lagu/sub judul dan mengembalikan area teks yang digambar
+    /// (dipakai pratinjau Karaoke untuk mendeteksi tumpukan).
+    pub(super) fn draw_thumbnail_overlay(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        use_demo_if_empty: bool,
+    ) -> Vec<Rect> {
+        let mut drawn: Vec<Rect> = Vec::new();
+        let painter = painter.with_clip_rect(rect);
+        let painter = &painter;
+        let scale_x = rect.width() / 1920.0;
+        let scale_y = rect.height() / 1080.0;
+        let scale = scale_x.min(scale_y);
+        // Match ab_glyph's pt_to_px_scale factor (~0.72) so preview proportions match 1920x1080 output
+        const PT_TO_PX: f32 = 0.72;
+
+        let state = &self.thumbnail;
+        let spec = self.build_thumbnail_spec(!use_demo_if_empty);
+
+        // Vignette overlay: selalu tampil di Thumbnail, di Video hanya jika dicentang
+        if spec.vignette_opacity > 0.0 {
+            draw_vignette(painter, rect, spec.vignette_opacity);
+        }
 
         // Determine egui font families for live preview
         let title_font_family = if state.title_custom_font.is_some() {
@@ -724,9 +886,9 @@ impl StudioApp {
         };
 
         // Draw Title (Top Centered)
-        if !state.title.trim().is_empty() {
-            let title_scale = (state.title_size as f32 * scale).max(14.0);
-            let title_y = rect.min.y + (1080.0 * state.title_y_pct) * scale;
+        if !spec.title.trim().is_empty() {
+            let title_scale = (state.title_size as f32 * PT_TO_PX * scale).max(6.0);
+            let title_y = rect.min.y + (1080.0 * state.title_y_pct) * scale_y;
             let title_pos = Pos2::new(rect.center().x, title_y);
             let title_color = Color32::from_rgb(
                 state.title_color[0],
@@ -734,51 +896,51 @@ impl StudioApp {
                 state.title_color[2],
             );
             let title_font = FontId::new(title_scale, title_font_family);
-            draw_outlined_text(
-                &painter,
+            drawn.push(draw_outlined_text(
+                painter,
                 title_pos,
                 egui::Align2::CENTER_TOP,
-                state.title.trim(),
+                spec.title.trim(),
                 title_font,
                 title_color,
-                (4.0 * scale).max(1.2),
-            );
+                (3.6 * scale).max(0.8),
+            ));
         }
 
         // Draw Track Rows (Left and Right columns)
         let rows = thumbnail::layout_tracks(&spec);
-        let track_scale = (state.track_size as f32 * scale).max(8.0);
+        let track_scale = (state.track_size as f32 * PT_TO_PX * scale).max(4.5);
         let track_color = Color32::from_rgb(
             state.track_color[0],
             state.track_color[1],
             state.track_color[2],
         );
         let track_font = FontId::new(track_scale, egui::FontFamily::Name(theme::SEMIBOLD.into()));
-        let outline_thickness = (2.4 * scale).max(1.0);
+        let outline_thickness = (2.2 * scale).max(0.6);
 
         for row in rows {
-            let px = rect.min.x + (row.x as f32) * scale;
-            let py = rect.min.y + (row.y as f32) * scale;
+            let px = rect.min.x + (row.x as f32) * scale_x;
+            let py = rect.min.y + (row.y as f32) * scale_y;
             let align2 = match row.align {
                 Align::Left => egui::Align2::LEFT_TOP,
                 Align::Right => egui::Align2::RIGHT_TOP,
                 Align::Center => egui::Align2::CENTER_TOP,
             };
-            draw_outlined_text(
-                &painter,
+            drawn.push(draw_outlined_text(
+                painter,
                 Pos2::new(px, py),
                 align2,
                 &row.text,
                 track_font.clone(),
                 track_color,
                 outline_thickness,
-            );
+            ));
         }
 
         // Draw Subtitle (Bottom Centered)
-        if !state.subtitle.trim().is_empty() {
-            let sub_scale = (state.subtitle_size as f32 * scale).max(10.0);
-            let sub_y = rect.min.y + (1080.0 * state.subtitle_y_pct) * scale;
+        if !spec.subtitle.trim().is_empty() {
+            let sub_scale = (state.subtitle_size as f32 * PT_TO_PX * scale).max(5.5);
+            let sub_y = rect.min.y + (1080.0 * state.subtitle_y_pct) * scale_y;
             let sub_pos = Pos2::new(rect.center().x, sub_y);
             let sub_color = Color32::from_rgb(
                 state.subtitle_color[0],
@@ -786,16 +948,17 @@ impl StudioApp {
                 state.subtitle_color[2],
             );
             let sub_font = FontId::new(sub_scale, subtitle_font_family);
-            draw_outlined_text(
-                &painter,
+            drawn.push(draw_outlined_text(
+                painter,
                 sub_pos,
                 egui::Align2::CENTER_TOP,
-                state.subtitle.trim(),
+                spec.subtitle.trim(),
                 sub_font,
                 sub_color,
-                (3.0 * scale).max(1.0),
-            );
+                (2.6 * scale).max(0.7),
+            ));
         }
+        drawn
     }
 
     pub(super) fn generate_thumbnail(&mut self) {
@@ -808,48 +971,8 @@ impl StudioApp {
             .image
             .clone()
             .unwrap_or_else(|| background.video.path.clone().into());
+        let spec = self.build_thumbnail_spec(false);
         let state = &self.thumbnail;
-        let track_titles: Vec<String> = if self.tracks.is_empty() {
-            DEMO_TRACKS.iter().map(|&s| s.to_string()).collect()
-        } else {
-            self.tracks
-                .iter()
-                .map(|track| track.title.clone())
-                .collect()
-        };
-
-        let title_font_path = resolve_font_path(
-            &state.title_custom_font,
-            &TITLE_FONTS[state.title_font_preset],
-        );
-        let subtitle_font_path = resolve_font_path(
-            &state.subtitle_custom_font,
-            &SUBTITLE_FONTS[state.subtitle_font_preset],
-        );
-
-        let spec = ThumbnailSpec {
-            title: state.title.clone(),
-            subtitle: state.subtitle.clone(),
-            track_titles,
-            column_mode: COLUMN_MODES[state.column_mode].0.to_owned(),
-            number_style: if state.mirrored_numbers {
-                "mirrored"
-            } else {
-                "sequential"
-            }
-            .to_owned(),
-            title_font_size: state.title_size,
-            track_font_size: state.track_size,
-            subtitle_font_size: state.subtitle_size,
-            vignette_opacity: state.vignette,
-            title_color: hex(state.title_color),
-            track_color: hex(state.track_color),
-            subtitle_color: hex(state.subtitle_color),
-            title_y_pct: state.title_y_pct,
-            subtitle_y_pct: state.subtitle_y_pct,
-            title_font_path,
-            subtitle_font_path,
-        };
 
         let timestamp = if is_video && background.video.duration > 0.0 {
             state.timestamp.clamp(0.0, background.video.duration)
@@ -912,8 +1035,7 @@ impl StudioApp {
     }
 }
 
-fn draw_scenic_placeholder(painter: &egui::Painter, rect: Rect) {
-    let w = rect.width();
+pub(super) fn draw_scenic_placeholder(painter: &egui::Painter, rect: Rect) {
     let h = rect.height();
 
     // Base background: night / dusk sky
@@ -943,15 +1065,6 @@ fn draw_scenic_placeholder(painter: &egui::Painter, rect: Rect) {
         Pos2::new(rect.max.x, rect.max.y),
     );
     painter.rect_filled(rock_rect, 0.0, Color32::from_rgb(20, 18, 22));
-
-    // Small label in center
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "Latar Belakang Simulasi (Pilih video/gambar di Main Menu untuk latar nyata)",
-        FontId::proportional(11.0 * (w / 640.0).clamp(0.6, 1.2)),
-        Color32::from_white_alpha(70),
-    );
 }
 
 fn draw_vignette(painter: &egui::Painter, rect: Rect, opacity: f32) {
@@ -1017,7 +1130,7 @@ fn draw_outlined_text(
     font: FontId,
     color: Color32,
     outline_thickness: f32,
-) {
+) -> Rect {
     let black = Color32::BLACK;
     let offsets = [
         (-1.0, 0.0),
@@ -1043,5 +1156,25 @@ fn draw_outlined_text(
     );
     painter.text(shadow_p, align, text, font.clone(), black);
     // Main text
-    painter.text(pos, align, text, font, color);
+    painter.text(pos, align, text, font, color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_font_family_name_if_available() {
+        let windows_root = std::env::var_os("SystemRoot").map_or_else(
+            || std::path::PathBuf::from(r"C:\Windows"),
+            std::path::PathBuf::from,
+        );
+        let impact = windows_root.join("Fonts").join("impact.ttf");
+        if impact.is_file() {
+            assert_eq!(
+                extract_font_family_name(&impact),
+                Some("Impact".to_string())
+            );
+        }
+    }
 }

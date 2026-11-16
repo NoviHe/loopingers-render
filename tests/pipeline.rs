@@ -43,8 +43,12 @@ fn request(video: PathBuf, tracks: Vec<TrackData>, effect: &str) -> RenderReques
         encoder: Encoder::CpuX264,
         preset: "ultrafast".to_owned(),
         quality: 28,
+        audio_bitrate: String::new(),
+        youtube_standard: false,
         beat_pulse: true,
         visual_effect: effect.to_owned(),
+        visualizer: None,
+        tracklist_overlay: None,
     }
 }
 
