@@ -70,4 +70,4 @@ mencakup perubahan dari tag 2.1.1 yang build rilisnya belum berhasil.
 - Generate dan Batch Render menggunakan alur media sendiri.
 
 ### Pengembangan
-- Panduan native Codex subagents diperbarui.
+- Panduan native Codex subagents diperbarui.
