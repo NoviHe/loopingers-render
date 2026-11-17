@@ -123,7 +123,10 @@ pub mod metrics {
         style.spacing.menu_margin = egui::Margin::same(6);
         style.animation_time = 0.12;
         // Prevent egui from drawing bright orange debug lines under sub-pixel rects.
-        style.debug.show_unaligned = false;
+        #[cfg(debug_assertions)]
+        {
+            style.debug.show_unaligned = false;
+        }
     }
 }
 

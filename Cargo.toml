@@ -1,6 +1,6 @@
 [package]
 name = "loopkaraoke-studio"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2021"
 rust-version = "1.85"
 description = "Loop video backgrounds, merge songs and burn word-by-word karaoke lyrics"
