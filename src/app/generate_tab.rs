@@ -6,7 +6,7 @@ use eframe::egui::{
 };
 use loopkaraoke::{
     config::GenerateAdvancedSettings,
-    media::{probe_audio, probe_video, AudioInfo, VideoInfo},
+    media::{probe_audio, probe_video, AudioInfo, VideoInfo, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS},
     render::{
         self, build_anti_duplicate_stamp,
         encoder::VideoTarget,
@@ -18,7 +18,7 @@ use loopkaraoke::{
 };
 
 use super::{
-    background, lyrics, playlist,
+    lyrics, playlist,
     theme::{self, UiText},
     Event, StudioApp,
 };
@@ -45,6 +45,7 @@ pub(crate) struct GenerateTrack {
     pub path: PathBuf,
     pub title: String,
     pub duration: f64,
+    pub lrc: Option<(PathBuf, usize)>,
 }
 
 pub(crate) struct GenerateState {
@@ -104,6 +105,8 @@ impl GenerateState {
         let id = self.next_track_id;
         self.next_track_id += 1;
         let path = PathBuf::from(&info.path);
+        let lrc = super::playlist::find_companion_lrc(&path, info.duration)
+            .map(|(path, lines)| (path, lines.len()));
         let title = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -114,10 +117,11 @@ impl GenerateState {
             path,
             title,
             duration: info.duration,
+            lrc,
         });
     }
 
-    fn total_duration(&self) -> f64 {
+    pub(super) fn total_duration(&self) -> f64 {
         self.tracks.iter().map(|track| track.duration).sum()
     }
 
@@ -219,10 +223,11 @@ impl GenerateState {
 }
 
 #[derive(Clone, Copy)]
-enum GenerateIcon {
+pub(super) enum GenerateIcon {
     Upload,
     Folder,
     Music,
+    PlusCircle,
     Shuffle,
     Copy,
     Speaker,
@@ -411,7 +416,7 @@ impl StudioApp {
             if !self.ffmpeg_ready {
                 self.warn("Menunggu FFmpeg siap sebelum mengimpor video.");
             } else if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Video", &background::VIDEO_EXTENSIONS)
+                .add_filter("Video", &VIDEO_EXTENSIONS)
                 .pick_file()
             {
                 self.load_generate_video(path);
@@ -419,7 +424,7 @@ impl StudioApp {
         }
         if pick_thumbnail {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Gambar", &background::IMAGE_EXTENSIONS)
+                .add_filter("Gambar", &IMAGE_EXTENSIONS)
                 .pick_file()
             {
                 let name = path
@@ -465,7 +470,12 @@ impl StudioApp {
         }
     }
 
-    fn generate_playlist_card(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn generate_playlist_card(&mut self, ui: &mut egui::Ui) {
+        let list_height = if self.tab == super::Tab::Playlist {
+            340.0
+        } else {
+            170.0
+        };
         let rows: Vec<(u32, String, u64)> = self
             .generate
             .tracks
@@ -585,13 +595,13 @@ impl StudioApp {
 
                     egui::ScrollArea::vertical()
                         .id_salt("generate_playlist_scroll")
-                        .min_scrolled_height(170.0)
-                        .max_height(170.0)
+                        .min_scrolled_height(list_height)
+                        .max_height(list_height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             if rows.is_empty() {
                                 ui.allocate_ui_with_layout(
-                                    egui::vec2(ui.available_width(), 170.0),
+                                    egui::vec2(ui.available_width(), list_height),
                                     Layout::centered_and_justified(egui::Direction::TopDown),
                                     |ui| {
                                         ui.muted_label("Belum ada lagu.");
@@ -611,6 +621,10 @@ impl StudioApp {
                                         *secs,
                                         is_playing,
                                         dragging_idx,
+                                        self.generate.tracks[idx]
+                                            .lrc
+                                            .as_ref()
+                                            .map(|(_, lines)| *lines),
                                     );
                                     if action.is_some() {
                                         row_action = action;
@@ -724,7 +738,7 @@ impl StudioApp {
         lyrics::win_audio::stop();
     }
 
-    fn toggle_generate_preview(&mut self, index: usize) {
+    pub(super) fn toggle_generate_preview(&mut self, index: usize) {
         let Some(track) = self.generate.tracks.get(index) else {
             return;
         };
@@ -1311,7 +1325,7 @@ impl StudioApp {
         }
     }
 
-    fn pick_generate_audio_folders(&mut self) {
+    pub(super) fn pick_generate_audio_folders(&mut self) {
         let Some(folders) = rfd::FileDialog::new().pick_folders() else {
             return;
         };
@@ -1337,7 +1351,7 @@ impl StudioApp {
         }
     }
 
-    fn pick_generate_audio_files(&mut self) {
+    pub(super) fn pick_generate_audio_files(&mut self) {
         let picked = rfd::FileDialog::new()
             .add_filter("Audio", &playlist::AUDIO_EXTENSIONS)
             .pick_files();
@@ -1645,7 +1659,7 @@ impl StepperChange {
     }
 }
 
-fn draw_stepper_button(
+pub(super) fn draw_stepper_button(
     ui: &mut Ui,
     symbol_plus: bool,
     enabled: bool,
@@ -1705,7 +1719,7 @@ fn draw_stepper_button(
     resp
 }
 
-fn paint_vertical_divider(ui: &mut Ui, color: Color32) {
+pub(super) fn paint_vertical_divider(ui: &mut Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 28.0), Sense::hover());
     ui.painter().line_segment(
         [
@@ -1997,7 +2011,7 @@ fn labeled_combo(
         });
 }
 
-fn generate_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+pub(super) fn generate_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     let p = theme::Palette::of(ui.ctx());
     egui::Frame::new()
         .fill(p.surface)
@@ -2011,24 +2025,30 @@ fn generate_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
         });
 }
 
-fn card_header(ui: &mut Ui, icon: GenerateIcon, title: &str, subtitle: &str) {
+pub(super) fn accent_badge_colors(
+    ctx: &egui::Context,
+    p: &theme::Palette,
+) -> (Color32, Color32, Color32) {
+    if ctx.theme() == egui::Theme::Dark {
+        (
+            Color32::from_rgb(24, 38, 66),
+            Color32::from_rgb(42, 70, 122),
+            p.accent_hover,
+        )
+    } else {
+        (
+            Color32::from_rgb(239, 246, 255),
+            Color32::from_rgb(191, 219, 254),
+            p.accent,
+        )
+    }
+}
+
+pub(super) fn card_header(ui: &mut Ui, icon: GenerateIcon, title: &str, subtitle: &str) {
     let p = theme::Palette::of(ui.ctx());
-    let dark = ui.ctx().theme() == egui::Theme::Dark;
     ui.horizontal(|ui| {
         let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), Sense::hover());
-        let (badge_fill, badge_border, badge_fg) = if dark {
-            (
-                Color32::from_rgb(24, 38, 66),
-                Color32::from_rgb(42, 70, 122),
-                p.accent_hover,
-            )
-        } else {
-            (
-                Color32::from_rgb(239, 246, 255),
-                Color32::from_rgb(191, 219, 254),
-                p.accent,
-            )
-        };
+        let (badge_fill, badge_border, badge_fg) = accent_badge_colors(ui.ctx(), &p);
         let painter = ui.painter();
         painter.rect(
             badge_rect,
@@ -2052,6 +2072,7 @@ fn card_header(ui: &mut Ui, icon: GenerateIcon, title: &str, subtitle: &str) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn playlist_row(
     ui: &mut Ui,
     idx: usize,
@@ -2060,6 +2081,7 @@ fn playlist_row(
     secs: u64,
     is_playing: bool,
     dragging_idx: Option<usize>,
+    lrc_lines: Option<usize>,
 ) -> (Option<PlaylistRowAction>, bool, bool) {
     let p = theme::Palette::of(ui.ctx());
     let row_width = ui.available_width();
@@ -2168,7 +2190,21 @@ fn playlist_row(
 
     // Track filename with clean truncation before duration column
     let title_min_x = rect.min.x + 42.0;
-    let title_max_x = (dur_x - 12.0).max(title_min_x + 40.0);
+    let title_right = if let Some(lines) = lrc_lines {
+        let badge_rect =
+            Rect::from_center_size(egui::pos2(dur_x - 30.0, cy), egui::vec2(40.0, 24.0));
+        let mut badge_ui = ui.new_child(
+            UiBuilder::new()
+                .id_salt(("gen_row_lrc", idx))
+                .max_rect(badge_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        super::playlist::draw_lrc_badge(&mut badge_ui, lines);
+        badge_rect.min.x - 8.0
+    } else {
+        dur_x - 12.0
+    };
+    let title_max_x = title_right.max(title_min_x + 40.0);
     let title_rect = Rect::from_min_max(
         egui::pos2(title_min_x, rect.min.y),
         egui::pos2(title_max_x, rect.max.y),
@@ -2264,7 +2300,7 @@ fn button_visuals(response: &egui::Response, p: &theme::Palette) -> (Color32, Co
     (fill, border_color)
 }
 
-fn outline_icon_button(ui: &mut Ui, icon: GenerateIcon, label: &str) -> egui::Response {
+pub(super) fn outline_icon_button(ui: &mut Ui, icon: GenerateIcon, label: &str) -> egui::Response {
     styled_outline_icon_button(ui, icon, label, false)
 }
 
@@ -2290,7 +2326,7 @@ fn plain_progress_bar(ui: &mut Ui, progress: f32) {
     }
 }
 
-fn primary_render_button(ui: &mut Ui, label: &str, enabled: bool) -> egui::Response {
+pub(super) fn primary_render_button(ui: &mut Ui, label: &str, enabled: bool) -> egui::Response {
     let width = ui.available_width();
     let height = 38.0;
     let sense = if enabled {
@@ -2423,7 +2459,7 @@ fn styled_outline_icon_button(
     response
 }
 
-fn square_icon_button(
+pub(super) fn square_icon_button(
     ui: &mut Ui,
     icon: GenerateIcon,
     enabled: bool,
@@ -2515,7 +2551,7 @@ fn volume_popup_pos(speaker_rect: Rect, popup_size: egui::Vec2, screen_rect: Rec
     egui::pos2(x, y)
 }
 
-fn show_volume_slider_popup(
+pub(super) fn show_volume_slider_popup(
     ui: &Ui,
     speaker_rect: Rect,
     allow_outside_close: bool,
@@ -2657,7 +2693,7 @@ fn show_volume_slider_popup(
     changed
 }
 
-fn row_icon_button(
+pub(super) fn row_icon_button(
     ui: &mut Ui,
     id_salt: (&str, usize),
     rect: Rect,
@@ -2697,7 +2733,7 @@ fn row_icon_button(
     clicked
 }
 
-fn format_track_duration(total_seconds: u64) -> String {
+pub(super) fn format_track_duration(total_seconds: u64) -> String {
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
@@ -2761,6 +2797,17 @@ fn draw_generate_icon(painter: &egui::Painter, c: Pos2, icon: GenerateIcon, colo
                     egui::pos2(left_top.x, left_top.y + 2.4),
                     egui::pos2(right_top.x, right_top.y + 2.4),
                 ],
+                stroke,
+            );
+        }
+        GenerateIcon::PlusCircle => {
+            painter.circle_stroke(c, 5.4, stroke);
+            painter.line_segment(
+                [egui::pos2(c.x - 2.6, c.y), egui::pos2(c.x + 2.6, c.y)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - 2.6), egui::pos2(c.x, c.y + 2.6)],
                 stroke,
             );
         }
@@ -3023,6 +3070,36 @@ fn draw_generate_icon(painter: &egui::Painter, c: Pos2, icon: GenerateIcon, colo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_generate_tracks_detect_matching_lrc_without_using_legacy_playlist() {
+        let dir = std::env::temp_dir().join(format!("generate-lrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lrc_path = dir.join("Lagu.LRC");
+        std::fs::write(&lrc_path, "[00:01.00]Baris pertama\n[00:05.00]Baris kedua").unwrap();
+        let mut state = GenerateState::default();
+        for filename in ["lagu.mp3", "tanpa-lirik.mp3"] {
+            state.push_audio(AudioInfo {
+                path: dir.join(filename).to_string_lossy().into_owned(),
+                filename: filename.into(),
+                title: filename.into(),
+                artist: String::new(),
+                duration: 60.0,
+                duration_str: "1:00".into(),
+                size_bytes: 0,
+                size_mb: 0.0,
+            });
+        }
+        let (detected_path, lines) = state.tracks[0].lrc.as_ref().unwrap();
+        assert_eq!(
+            detected_path.canonicalize().unwrap(),
+            lrc_path.canonicalize().unwrap()
+        );
+        assert_eq!(*lines, 2);
+        assert!(state.tracks[1].lrc.is_none());
+        std::fs::remove_file(dir.join("Lagu.LRC")).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
 
     #[test]
     fn parses_non_negative_seconds() {

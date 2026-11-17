@@ -939,7 +939,9 @@ pub fn primary_button(text: impl Into<String>) -> StyledButton<'static> {
 #[derive(Clone, Copy)]
 pub enum SidebarIcon {
     Dashboard,
+    RenderOld,
     Generate,
+    BatchRender,
     Background,
     Playlist,
     Lyrics,
@@ -990,6 +992,24 @@ pub fn sidebar_toggle_button(ui: &mut Ui) -> bool {
 fn draw_sidebar_icon(painter: &egui::Painter, c: egui::Pos2, icon: SidebarIcon, color: Color32) {
     let stroke = Stroke::new(1.3_f32, color);
     match icon {
+        SidebarIcon::RenderOld => {
+            let screen = egui::Rect::from_center_size(c, egui::vec2(15.0, 12.0));
+            painter.rect_stroke(
+                screen,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(c.x - 2.0, c.y - 3.0),
+                    egui::pos2(c.x + 3.0, c.y),
+                    egui::pos2(c.x - 2.0, c.y + 3.0),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
         SidebarIcon::Dashboard => {
             for (dx, dy) in [(-3.5_f32, -3.5_f32), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
                 let cell = egui::Rect::from_center_size(
@@ -1020,6 +1040,28 @@ fn draw_sidebar_icon(painter: &egui::Painter, c: egui::Pos2, icon: SidebarIcon, 
             }
             painter.line_segment([pts[7], pts[0]], stroke);
             painter.circle_filled(egui::pos2(c.x + 4.8, c.y - 4.8), 1.3, color);
+        }
+        SidebarIcon::BatchRender => {
+            let front = egui::Rect::from_min_max(
+                egui::pos2(c.x - 6.0, c.y - 1.8),
+                egui::pos2(c.x + 2.8, c.y + 5.2),
+            );
+            painter.rect_stroke(
+                front,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            let back = [
+                egui::pos2(c.x - 3.0, c.y - 1.8),
+                egui::pos2(c.x - 3.0, c.y - 4.8),
+                egui::pos2(c.x + 5.8, c.y - 4.8),
+                egui::pos2(c.x + 5.8, c.y + 2.2),
+                egui::pos2(c.x + 2.8, c.y + 2.2),
+            ];
+            for seg in back.windows(2) {
+                painter.line_segment([seg[0], seg[1]], stroke);
+            }
         }
         SidebarIcon::Background => {
             let frame = egui::Rect::from_center_size(c, egui::vec2(14.0, 10.0));

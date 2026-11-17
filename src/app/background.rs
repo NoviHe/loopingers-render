@@ -28,8 +28,6 @@ use loopkaraoke::{
 
 use super::{help::background as help, theme, Event, StudioApp};
 
-pub(super) const VIDEO_EXTENSIONS: [&str; 5] = ["mp4", "mov", "mkv", "webm", "avi"];
-pub(super) const IMAGE_EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "webp", "jfif"];
 const IMAGE_CLIP_SECONDS: f64 = 10.0;
 const IMAGE_CLIP_FPS: u32 = 30;
 
@@ -365,60 +363,6 @@ async fn build_image_background(
 }
 
 impl StudioApp {
-    pub(super) fn background_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(ui, "Video atau Gambar Background", help::HEADING);
-        ui.label("Video diulang otomatis sepanjang total durasi lagu. Gambar diubah menjadi video bergerak.");
-        ui.add_space(4.0);
-        ui.columns(2, |columns| {
-            self.background_source(&mut columns[0]);
-            self.draw_live_background_preview(&mut columns[1]);
-        });
-    }
-
-    fn background_source(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui.add(theme::primary_button("Pilih Video...")).clicked() {
-                let picked = rfd::FileDialog::new()
-                    .add_filter("Video", &VIDEO_EXTENSIONS)
-                    .pick_file();
-                if let Some(path) = picked {
-                    self.load_video(path);
-                }
-            }
-            theme::info(ui, help::PICK_VIDEO);
-            if ui.button("Pilih Gambar...").clicked() {
-                let picked = rfd::FileDialog::new()
-                    .add_filter("Gambar", &IMAGE_EXTENSIONS)
-                    .pick_file();
-                if let Some(path) = picked {
-                    self.load_image(path);
-                }
-            }
-            theme::info(ui, help::PICK_IMAGE);
-        });
-        ui.add_space(6.0);
-
-        if self.background.is_none() {
-            let frame = egui::Frame::new()
-                .fill(theme::FIELD_BG)
-                .stroke(egui::Stroke::new(1.0_f32, theme::FIELD_BORDER))
-                .corner_radius(4)
-                .inner_margin(egui::Margin::same(12));
-            frame.show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.vertical_centered(|ui| {
-                    ui.add_space(14.0);
-                    ui.label("Seret video atau gambar ke jendela ini");
-                    ui.small("atau pakai tombol di atas");
-                    ui.add_space(14.0);
-                });
-            });
-            return;
-        }
-
-        self.background_effects_card(ui, "bg_tab");
-    }
-
     /// Kelompok pengaturan Background Video/Gambar (termasuk Efek Visual, Rasio, Mode Tampilan, & Gerakan)
     /// yang muncul ketika berkas background sudah dipilih.
     pub(super) fn background_effects_card(&mut self, ui: &mut egui::Ui, id_prefix: &str) {

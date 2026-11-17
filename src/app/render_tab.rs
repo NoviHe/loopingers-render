@@ -1,186 +1,31 @@
 use eframe::egui;
 use loopkaraoke::{
-    hardware::HardwareInfo,
     media::format_clock,
     render::{
         self,
         effects::EFFECTS,
-        encoder::{Encoder, VideoTarget},
+        encoder::VideoTarget,
         job::{JobHandle, JobStatus},
-        presets::{self, RESOLUTION_LABELS},
+        presets,
         request::{ImageSource, RenderRequest, TrackData},
     },
     util::open_path,
 };
 
-use super::{help::render as help, theme, StudioApp};
+use super::{theme, StudioApp};
 
 impl StudioApp {
-    pub(super) fn render_tab(&mut self, ui: &mut egui::Ui) {
-        theme::heading_with_info(ui, "Render & Ekspor Video", help::HEADING);
-        ui.add_space(4.0);
-        ui.columns(2, |columns| {
-            self.render_settings(&mut columns[0]);
-            self.render_summary(&mut columns[1]);
-        });
-    }
-
     /// Why rendering cannot start yet, in words the user can act on.
     pub(super) fn render_blocker(&self) -> Option<&'static str> {
         if self.background.is_none() {
-            Some("Pilih background di langkah 1")
+            Some("Pilih video atau gambar di Render Old")
         } else if self.tracks.is_empty() {
-            Some("Tambahkan lagu di langkah 2")
+            Some("Tambahkan lagu di Render Old")
         } else if self.hardware.is_none() {
             Some("Mendeteksi hardware...")
         } else {
             None
         }
-    }
-
-    fn render_settings(&mut self, ui: &mut egui::Ui) {
-        theme::strong_with_info(ui, "Resolusi", help::RESOLUTION);
-        ui.horizontal_wrapped(|ui| {
-            for label in RESOLUTION_LABELS {
-                ui.radio_value(&mut self.resolution, label, label);
-            }
-        });
-        ui.add_space(4.0);
-        theme::strong_with_info(ui, "Frame rate", help::FPS);
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.fps, 30, "30 FPS");
-            ui.radio_value(&mut self.fps, 60, "60 FPS");
-        });
-        ui.add_space(4.0);
-
-        let hardware = self.hardware.clone().unwrap_or_default();
-        theme::strong_with_info(ui, "Encoder", help::ENCODER);
-        ui.label(format!(
-            "{} — {} ({})",
-            self.encoder.name(),
-            hardware.gpu_name,
-            hardware.vendor()
-        ));
-        ui.add_space(2.0);
-        egui::CollapsingHeader::new("Pengaturan lanjutan")
-            .default_open(false)
-            .show(ui, |ui| self.encoder_section(ui, &hardware));
-        ui.add_space(4.0);
-
-        theme::strong_with_info(ui, "Mode Daftar Lagu & Visual", help::PRESET);
-        ui.horizontal_wrapped(|ui| {
-            for mode in loopkaraoke::karaoke::ass::PlaylistDisplayMode::ALL {
-                if ui
-                    .selectable_label(self.playlist_mode == mode, mode.label())
-                    .clicked()
-                {
-                    self.playlist_mode = mode;
-                    if mode.includes_visual()
-                        && !self.show_tracklist_visual
-                        && !self.visualizer.enabled
-                    {
-                        self.show_tracklist_visual = true;
-                        self.visualizer.enabled = true;
-                    }
-                }
-            }
-        });
-        if self.playlist_mode.includes_visual() {
-            ui.checkbox(
-                &mut self.show_tracklist_visual,
-                format!(
-                    "Sertakan Daftar Judul Lagu (Tracklist) di Layar ({})",
-                    self.tracklist_position.label()
-                ),
-            );
-            ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut self.visualizer.enabled,
-                    "Sertakan Visualizer Musik pada Video",
-                );
-                if self.visualizer.enabled {
-                    ui.colored_label(
-                        theme::FOCUS,
-                        format!("(Bentuk: {})", self.visualizer.preset.label()),
-                    );
-                }
-            });
-        }
-    }
-
-    fn render_summary(&mut self, ui: &mut egui::Ui) {
-        let (aspect_ratio, resolution) = self.resolved_render_format();
-        let (width, height) = presets::dimensions(aspect_ratio, resolution);
-        let without_lyrics = self
-            .tracks
-            .iter()
-            .filter(|track| track.lyrics.is_empty())
-            .count();
-        theme::strong_with_info(ui, "Ringkasan", help::START);
-        ui.label(format!(
-            "Keluaran {width}x{height} • {} lagu • total {}",
-            self.tracks.len(),
-            format_clock(self.total_duration().round() as u64)
-        ));
-        ui.label(format!(
-            "Mode Daftar Lagu: {}",
-            self.playlist_mode.short_label()
-        ));
-        if self.playlist_mode.includes_lyrics() && without_lyrics > 0 {
-            ui.colored_label(
-                theme::WARNING,
-                format!("{without_lyrics} lagu belum punya lirik; hanya banner judul/daftar lagu yang tampil."),
-            );
-        }
-        if let Some(reason) = self.render_blocker() {
-            ui.colored_label(theme::WARNING, reason);
-        } else if self.job.is_none() {
-            ui.small("Semua siap. Tekan Mulai Render di kanan bawah.");
-        }
-
-        if let Some(job) = self.job.clone() {
-            ui.add_space(8.0);
-            self.job_section(ui, &job);
-        }
-    }
-
-    fn encoder_section(&mut self, ui: &mut egui::Ui, hardware: &HardwareInfo) {
-        let previous = self.encoder;
-        let best = Encoder::best_available(hardware);
-        ui.horizontal(|ui| {
-            if ui.button("Otomatis (terbaik)").clicked() {
-                self.encoder = best;
-                self.preset = best.default_preset().to_owned();
-            }
-            theme::info(ui, help::AUTO_ENCODER);
-        });
-        ui.horizontal_wrapped(|ui| {
-            for encoder in Encoder::ALL {
-                ui.add_enabled_ui(encoder.is_available(hardware), |ui| {
-                    ui.radio_value(&mut self.encoder, encoder, encoder.name());
-                });
-            }
-        });
-        if self.encoder != previous {
-            self.preset = self.encoder.default_preset().to_owned();
-        }
-
-        let presets = self.encoder.presets();
-        ui.horizontal(|ui| {
-            theme::label_with_info(ui, "Preset:", help::PRESET);
-            egui::ComboBox::from_id_salt("encoder_preset")
-                .selected_text(self.preset.clone())
-                .show_ui(ui, |ui| {
-                    for preset in presets {
-                        ui.selectable_value(&mut self.preset, (*preset).to_owned(), *preset);
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut self.quality, 15..=35).text("Kualitas"));
-            theme::info(ui, help::QUALITY);
-        });
-        ui.small("Angka kualitas makin kecil, gambar makin tajam, file makin besar.");
     }
 
     pub(super) fn job_section(&mut self, ui: &mut egui::Ui, job: &JobHandle) {

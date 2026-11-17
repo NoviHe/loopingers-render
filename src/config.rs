@@ -104,12 +104,6 @@ impl Default for GenerateAdvancedSettings {
 pub struct AppSettings {
     pub dark_mode: bool,
     pub video: VideoRenderSettings,
-    pub show_tab_background: bool,
-    pub show_tab_playlist: bool,
-    pub show_tab_lyrics: bool,
-    pub show_tab_visualizer: bool,
-    pub show_tab_render: bool,
-    pub show_tab_thumbnail: bool,
     pub resolution: String,
     pub fps: u32,
     pub auto_generate_thumbnail: bool,
@@ -121,12 +115,6 @@ impl Default for AppSettings {
         Self {
             dark_mode: true,
             video: VideoRenderSettings::default(),
-            show_tab_background: false,
-            show_tab_playlist: false,
-            show_tab_lyrics: true,
-            show_tab_visualizer: true,
-            show_tab_render: false,
-            show_tab_thumbnail: true,
             resolution: "1080p".to_owned(),
             fps: 30,
             auto_generate_thumbnail: true,
@@ -161,6 +149,20 @@ mod tests {
     use crate::render::encoder::{VideoCodec, VideoCompression, VideoTarget};
 
     #[test]
+    fn legacy_menu_visibility_settings_are_ignored_without_losing_preferences() {
+        let saved = r#"{"dark_mode":false,"fps":60,"show_tab_playlist":false,"show_tab_lyrics":false,"show_tab_thumbnail":false}"#;
+        let settings: AppSettings = serde_json::from_str(saved).unwrap();
+        assert!(!settings.dark_mode);
+        assert_eq!(settings.fps, 60);
+        let serialized = serde_json::to_value(&settings).unwrap();
+        assert!(serialized
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| !key.starts_with("show_tab_")));
+    }
+
+    #[test]
     fn settings_round_trip_and_fallback() {
         let root = std::env::temp_dir().join(format!("loopkaraoke-cfg-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -175,7 +177,6 @@ mod tests {
                 codec: VideoCodec::H264,
                 compression: VideoCompression::CompactSize,
             },
-            show_tab_render: true,
             resolution: "720p".to_owned(),
             fps: 60,
             generate: GenerateAdvancedSettings {

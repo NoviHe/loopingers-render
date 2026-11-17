@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, path::PathBuf};
+use std::f32::consts::PI;
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Shape, Stroke,
@@ -11,8 +11,8 @@ use loopkaraoke::{
 
 use super::{
     help::storage as help,
-    theme::{self, UiButtons, UiMetrics, UiPanels, UiText},
-    Event, StudioApp, Tab,
+    theme::{self, UiButtons, UiMetrics, UiText},
+    Event, StudioApp,
 };
 
 impl StudioApp {
@@ -24,7 +24,7 @@ impl StudioApp {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             theme::heading_with_info(ui, "Settings", help::HEADING);
-            ui.muted_label("Atur tampilan dan periksa update aplikasi.");
+            ui.muted_label("Atur tampilan, video, dan penyimpanan aplikasi.");
         });
         ui.space2();
 
@@ -33,198 +33,254 @@ impl StudioApp {
         self.video_settings_card(ui);
         ui.space3();
 
-        ui.muted_label(format!(
-            "Loopingers Render v{} — Pengaturan aplikasi, visibilitas menu, dan manajemen penyimpanan.",
-            env!("CARGO_PKG_VERSION")
-        ));
+        self.storage_management_card(ui);
         ui.space2();
+        self.about_card(ui);
+    }
 
-        let mut menu_notice: Option<String> = None;
-        ui.columns(2, |columns| {
-            // Card 1: Visibilitas Menu (Semua menu kecuali Dashboard, Generate, dan Settings)
-            columns[0].card(|ui| {
-                ui.set_width(ui.available_width());
-                ui.card_title("Visibilitas Menu");
-                ui.muted_label("Pilih menu lanjutan yang ingin ditampilkan pada sidebar.");
-                ui.space2();
-
-                let mut menu_flags = [
-                    (&mut self.show_tab_background, "Background"),
-                    (&mut self.show_tab_playlist, "Playlist"),
-                    (&mut self.show_tab_lyrics, "Lirik"),
-                    (&mut self.show_tab_visualizer, "Visualizer"),
-                    (&mut self.show_tab_render, "Render"),
-                    (&mut self.show_tab_thumbnail, "Thumbnail"),
-                ];
-                for (flag, name) in &mut menu_flags {
-                    if ui.checkbox(flag, *name).changed() {
-                        let state = if **flag {
-                            "ditampilkan"
-                        } else {
-                            "disembunyikan"
-                        };
-                        menu_notice = Some(format!("Menu sidebar \"{name}\" {state}."));
-                    }
-                }
-
-                ui.space_group();
-                ui.horizontal_wrapped(|ui| {
-                    if ui.secondary_button("Tampilkan Semua").clicked() {
-                        if menu_flags.iter().any(|(flag, _)| !**flag) {
-                            menu_notice =
-                                Some("Semua menu lanjutan di sidebar ditampilkan.".to_owned());
-                        }
-                        for (flag, _) in &mut menu_flags {
-                            **flag = true;
-                        }
-                    }
-                    if ui.secondary_button("Sembunyikan Semua").clicked() {
-                        if menu_flags.iter().any(|(flag, _)| **flag) {
-                            menu_notice =
-                                Some("Semua menu lanjutan di sidebar disembunyikan.".to_owned());
-                        }
-                        for (flag, _) in &mut menu_flags {
-                            **flag = false;
-                        }
-                    }
-                });
-
-                ui.space_group();
-                ui.metadata_label(
-                    "💡 Catatan: Dashboard, Generate, dan Settings selalu aktif secara bawaan.",
+    fn about_card(&self, ui: &mut egui::Ui) {
+        let dark = self.dark_mode;
+        let p = theme::Palette::of(ui.ctx());
+        let accent = if dark { p.accent_hover } else { p.accent };
+        settings_card(ui, |ui| {
+            settings_card_header(
+                ui,
+                dark,
+                SettingsBadgeIcon::About,
+                "Tentang",
+                "LoopKaraoke Studio — satu video loop jadi satu album.",
+            );
+            ui.add_space(10.0);
+            about_row(ui, "Versi", |ui| {
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .strong()
+                        .color(p.text_strong),
                 );
             });
-
-            // Card 2: Manajemen Penyimpanan & Berkas
-            columns[1].card(|ui| {
-                ui.set_width(ui.available_width());
-                ui.card_title("Manajemen Penyimpanan & Berkas");
-                ui.space1();
-                ui.horizontal(|ui| {
-                    if ui.secondary_button("🔄 Segarkan").clicked() {
-                        self.refresh_storage();
-                    }
-                    if ui.secondary_button("📂 Buka Folder Hasil").clicked() {
-                        let _ = open_path(&self.paths.outputs);
-                    }
-                });
-                ui.space2();
-
-                let Some(stats) = self.storage.clone() else {
-                    ui.label("Memuat statistik penyimpanan...");
-                    return;
-                };
-
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Berkas sementara: {:.2} MB ({} berkas)",
-                        stats.temp.size_mb, stats.temp.count
-                    ));
-                    theme::info(ui, help::TEMP);
-                });
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Video hasil render: {:.2} MB ({} berkas)",
-                        stats.outputs.size_mb, stats.outputs.count
-                    ));
-                    theme::info(ui, help::OUTPUTS);
-                });
-
-                let model_names: Vec<&str> = stats
-                    .models
-                    .files
-                    .iter()
-                    .map(|file| file.name.as_str())
-                    .collect();
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Model AI: {:.2} MB — {}",
-                        stats.models.size_mb,
-                        if model_names.is_empty() {
-                            "belum ada (diunduh saat pertama dipakai)".to_owned()
-                        } else {
-                            model_names.join(", ")
-                        }
-                    ));
-                    theme::info(ui, help::MODELS);
-                });
-                ui.strong_label(format!("Total pemakaian: {:.2} MB", stats.total_app_mb));
-
-                ui.space2();
-                ui.horizontal(|ui| {
-                    if ui.danger_button("Hapus Berkas Sementara").clicked() {
-                        self.clean(CleanupOptions {
-                            clean_temp: true,
-                            ..CleanupOptions::default()
-                        });
-                    }
-                    theme::info(ui, help::CLEAN_TEMP);
-                    if ui.danger_button("Hapus Semua Video Hasil").clicked() {
-                        self.clean(CleanupOptions {
-                            clean_outputs: true,
-                            ..CleanupOptions::default()
-                        });
-                    }
-                    theme::info(ui, help::CLEAN_OUTPUTS);
-                });
-
-                ui.add_space(8.0);
-                theme::strong_with_info(ui, "Daftar Video & Gambar Hasil", help::FILES);
-                let mut delete: Option<PathBuf> = None;
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_outputs_scroll")
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        if stats.outputs.files.is_empty() {
-                            ui.weak("Belum ada berkas hasil render.");
-                        } else {
-                            for file in &stats.outputs.files {
-                                ui.horizontal(|ui| {
-                                    ui.label(format!(
-                                        "{} • {:.2} MB • {}",
-                                        file.name, file.size_mb, file.modified_str
-                                    ));
-                                    if ui.small_button("Buka").clicked() {
-                                        let _ = open_path(&file.path);
-                                    }
-                                    if ui.small_button("Hapus").clicked() {
-                                        delete = Some(file.path.clone());
-                                    }
-                                });
-                            }
-                        }
-                    });
-
-                if let Some(path) = delete {
-                    let paths = self.paths.clone();
-                    self.spawn(async move {
-                        let removed = tokio::task::spawn_blocking(move || {
-                            storage::delete_file(&paths, &path)
-                        })
-                        .await
-                        .unwrap_or(false);
-                        Event::Cleaned(
-                            if removed {
-                                "File dihapus."
-                            } else {
-                                "File tidak dapat dihapus."
-                            }
-                            .to_owned(),
-                        )
-                    });
-                    self.storage = None;
-                }
+            about_row(ui, "GitHub", |ui| {
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    egui::RichText::new("NoviHe/loopingers-render").color(accent),
+                    "https://github.com/NoviHe/loopingers-render",
+                ));
+            });
+            about_row(ui, "Author", |ui| {
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    egui::RichText::new("Novi Herlambang").color(accent),
+                    "https://github.com/NoviHe",
+                ));
+            });
+            about_row(ui, "Telegram", |ui| {
+                ui.add(egui::Hyperlink::from_label_and_url(
+                    egui::RichText::new("082217352703").color(accent),
+                    "https://t.me/+6282217352703",
+                ));
             });
         });
+    }
 
-        if let Some(msg) = menu_notice {
-            self.save_settings();
-            self.info(msg);
-        }
-
-        if !self.tab_visible(self.tab) {
-            self.tab = Tab::Quick;
-        }
+    fn storage_management_card(&mut self, ui: &mut egui::Ui) {
+        let p = theme::Palette::of(ui.ctx());
+        settings_card(ui, |ui| {
+            settings_card_header(
+                ui,
+                self.dark_mode,
+                SettingsBadgeIcon::Folder,
+                "Manajemen Penyimpanan & Berkas",
+                "Pantau pemakaian ruang dan kelola berkas aplikasi.",
+            );
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.secondary_button("Segarkan").clicked() {
+                    self.refresh_storage();
+                }
+                if ui.secondary_button("Buka Folder Hasil").clicked() {
+                    if let Err(error) = open_path(&self.paths.outputs) {
+                        self.error(format!("Gagal membuka folder hasil: {error}"));
+                    }
+                }
+            });
+            ui.add_space(10.0);
+            let Some(stats) = self.storage.clone() else {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.muted_label("Memuat statistik penyimpanan...");
+                });
+                return;
+            };
+            let summaries = [
+                (
+                    "Berkas sementara",
+                    stats.temp.size_mb,
+                    stats.temp.count,
+                    help::TEMP,
+                ),
+                (
+                    "Hasil render",
+                    stats.outputs.size_mb,
+                    stats.outputs.count,
+                    help::OUTPUTS,
+                ),
+                (
+                    "Model AI",
+                    stats.models.size_mb,
+                    stats.models.count,
+                    help::MODELS,
+                ),
+            ];
+            let tile = |ui: &mut egui::Ui, index: usize| {
+                let (label, mb, count, tooltip) = summaries[index];
+                egui::Frame::new()
+                    .fill(p.bg)
+                    .stroke(Stroke::new(1.0_f32, p.border))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.muted_label(label).on_hover_text(tooltip);
+                        ui.label(
+                            egui::RichText::new(format!("{mb:.2} MB"))
+                                .size(21.0)
+                                .strong()
+                                .color(p.text_strong),
+                        );
+                        ui.muted_label(format!("{count} berkas"));
+                    });
+            };
+            if ui.available_width() >= 600.0 {
+                ui.columns(3, |columns| {
+                    for (index, column) in columns.iter_mut().enumerate() {
+                        tile(column, index);
+                    }
+                });
+            } else {
+                for index in 0..3 {
+                    tile(ui, index);
+                    ui.add_space(6.0);
+                }
+            }
+            ui.add_space(8.0);
+            ui.strong_label(format!("Total pemakaian: {:.2} MB", stats.total_app_mb));
+            if !stats.models.files.is_empty() {
+                ui.muted_label(format!(
+                    "Model terpasang: {}",
+                    stats
+                        .models
+                        .files
+                        .iter()
+                        .map(|file| file.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(
+                        stats.temp.count > 0,
+                        theme::StyledButton::danger("Hapus Berkas Sementara"),
+                    )
+                    .on_hover_text(help::CLEAN_TEMP)
+                    .clicked()
+                {
+                    self.clean(CleanupOptions {
+                        clean_temp: true,
+                        ..CleanupOptions::default()
+                    });
+                }
+                if ui
+                    .add_enabled(
+                        stats.outputs.count > 0,
+                        theme::StyledButton::danger("Hapus Semua Hasil"),
+                    )
+                    .on_hover_text(help::CLEAN_OUTPUTS)
+                    .clicked()
+                {
+                    self.clean(CleanupOptions {
+                        clean_outputs: true,
+                        ..CleanupOptions::default()
+                    });
+                }
+            });
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(10.0);
+            theme::strong_with_info(ui, "Berkas Hasil", help::FILES);
+            ui.add_space(6.0);
+            let mut delete = None;
+            egui::ScrollArea::vertical()
+                .id_salt("settings_outputs_scroll")
+                .max_height(280.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if stats.outputs.files.is_empty() {
+                        ui.muted_label("Belum ada berkas hasil render.");
+                    }
+                    for file in &stats.outputs.files {
+                        egui::Frame::new()
+                            .fill(p.bg)
+                            .stroke(Stroke::new(1.0_f32, p.border))
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.danger_button("Hapus").clicked() {
+                                                delete = Some(file.path.clone());
+                                            }
+                                            if ui.secondary_button("Buka").clicked() {
+                                                if let Err(error) = open_path(&file.path) {
+                                                    self.error(format!(
+                                                        "Gagal membuka berkas: {error}"
+                                                    ));
+                                                }
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::top_down(egui::Align::Min),
+                                                |ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(&file.name)
+                                                                .strong(),
+                                                        )
+                                                        .truncate(),
+                                                    )
+                                                    .on_hover_text(file.path.display().to_string());
+                                                    ui.muted_label(format!(
+                                                        "{:.2} MB | {}",
+                                                        file.size_mb, file.modified_str
+                                                    ));
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                            });
+                        ui.add_space(4.0);
+                    }
+                });
+            if let Some(path) = delete {
+                let paths = self.paths.clone();
+                self.spawn(async move {
+                    let removed =
+                        tokio::task::spawn_blocking(move || storage::delete_file(&paths, &path))
+                            .await
+                            .unwrap_or(false);
+                    Event::Cleaned(
+                        if removed {
+                            "Berkas berhasil dihapus."
+                        } else {
+                            "Berkas tidak dapat dihapus."
+                        }
+                        .to_owned(),
+                    )
+                });
+                self.storage = None;
+            }
+        });
     }
 
     fn refresh_storage(&mut self) {
@@ -478,6 +534,7 @@ impl StudioApp {
 enum SettingsBadgeIcon {
     Sun,
     Folder,
+    About,
 }
 
 #[derive(Clone, Copy)]
@@ -534,6 +591,19 @@ fn settings_card_header(
         match icon {
             SettingsBadgeIcon::Sun => draw_sun_icon(painter, badge_rect.center(), badge_fg, 3.0),
             SettingsBadgeIcon::Folder => draw_folder_icon(painter, badge_rect.center(), badge_fg),
+            SettingsBadgeIcon::About => {
+                painter.circle_filled(badge_rect.center(), 7.0, badge_fg);
+                let center = badge_rect.center();
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        Pos2::new(center.x - 2.0, center.y - 3.0),
+                        Pos2::new(center.x + 3.0, center.y),
+                        Pos2::new(center.x - 2.0, center.y + 3.0),
+                    ],
+                    p.surface,
+                    Stroke::NONE,
+                ));
+            }
         }
 
         ui.add_space(4.0);
@@ -547,6 +617,23 @@ fn settings_card_header(
             ui.muted_label(subtitle);
         });
     });
+}
+
+fn about_row(ui: &mut egui::Ui, label: &str, value: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::Palette::of(ui.ctx());
+    egui::Frame::new()
+        .fill(p.bg)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.muted_label(label);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), value);
+            });
+        });
+    ui.add_space(6.0);
 }
 
 fn segment_group(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {

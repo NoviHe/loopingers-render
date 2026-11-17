@@ -46,6 +46,7 @@ pub struct ThumbnailSpec {
     pub title_y_pct: f32,
     pub subtitle_y_pct: f32,
     pub title_font_path: Option<PathBuf>,
+    pub track_font_path: Option<PathBuf>,
     pub subtitle_font_path: Option<PathBuf>,
 }
 
@@ -414,6 +415,8 @@ pub fn layout_tracks(spec: &ThumbnailSpec) -> Vec<TrackRow> {
             let title = shorten(&clean_proper_title(title), TWO_COLUMN_TITLE_CHARS);
             let text = if spec.number_style == "mirrored" {
                 format!("{title}  .{:02}", index + 1)
+            } else if spec.number_style == "mirrored_sequential" {
+                format!("{title}  .{:02}", half + index + 1)
             } else {
                 format!("{:02}.  {title}", half + index + 1)
             };
@@ -615,7 +618,14 @@ impl Fonts {
             load_font(&["segoesc.ttf", "ariali.ttf", "arial.ttf", "DejaVuSans.ttf"])?
         };
 
-        let track = load_font(&["arialbd.ttf", "DejaVuSans-Bold.ttf"])?;
+        let custom_track = spec
+            .track_font_path
+            .as_deref()
+            .and_then(|path| load_font_file(path).ok());
+        let track = match custom_track {
+            Some(font) => font,
+            None => load_font(&["arialbd.ttf", "DejaVuSans-Bold.ttf"])?,
+        };
 
         Ok(Self {
             title,
@@ -685,6 +695,7 @@ mod tests {
             title_y_pct: 0.055,
             subtitle_y_pct: 0.82,
             title_font_path: None,
+            track_font_path: None,
             subtitle_font_path: None,
         }
     }
@@ -705,6 +716,52 @@ mod tests {
         assert_eq!(rows[6].align, Align::Right);
         let sequential = layout_tracks(&spec(12, "2", "sequential"));
         assert_eq!(sequential[6].text, "07.  Song 7");
+    }
+
+    #[test]
+    fn mirrored_sequential_columns_continue_numbers_on_the_right() {
+        let rows = layout_tracks(&spec(19, "2", "mirrored_sequential"));
+        assert_eq!(rows[0].text, "01.  Song 1");
+        assert_eq!(rows[9].text, "10.  Song 10");
+        assert_eq!(rows[10].text, "Song 11  .11");
+        assert_eq!(rows[18].text, "Song 19  .19");
+        assert_eq!(rows[10].align, Align::Right);
+    }
+
+    #[test]
+    fn custom_track_font_is_loaded_and_missing_font_uses_the_default() {
+        let mut s = spec(3, "1", "sequential");
+        let font_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/JetBrainsMono-Regular.ttf");
+        let expected = load_font_file(&font_path).unwrap();
+        s.track_font_path = Some(font_path);
+        let custom = Fonts::load_for_spec(&s).unwrap();
+        for character in ['W', 'i', 'A'] {
+            assert_eq!(
+                custom
+                    .track
+                    .font
+                    .h_advance_unscaled(custom.track.font.glyph_id(character)),
+                expected
+                    .font
+                    .h_advance_unscaled(expected.font.glyph_id(character))
+            );
+        }
+
+        s.track_font_path = None;
+        let default = Fonts::load_for_spec(&s).unwrap();
+        s.track_font_path = Some(PathBuf::from("missing-track-font.ttf"));
+        let fallback = Fonts::load_for_spec(&s).unwrap();
+        assert_eq!(
+            fallback
+                .track
+                .font
+                .h_advance_unscaled(fallback.track.font.glyph_id('W')),
+            default
+                .track
+                .font
+                .h_advance_unscaled(default.track.font.glyph_id('W'))
+        );
     }
 
     #[test]

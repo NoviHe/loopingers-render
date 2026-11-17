@@ -6,7 +6,24 @@ use loopkaraoke::{
     util::{open_path, random_id},
 };
 
-use super::{help::thumbnail as help, hex, theme, Event, LogLevel, StudioApp};
+use super::{
+    generate_tab::{
+        card_header, generate_card, outline_icon_button, primary_render_button, GenerateIcon,
+    },
+    help::thumbnail as help,
+    hex,
+    theme::{self, UiText},
+    Event, LogLevel, StudioApp, Tab,
+};
+
+const EXAMPLE_TITLE: &str = "Lorem Ipsum";
+const EXAMPLE_SUBTITLE: &str = "Dolor Sit Amet";
+
+const NUMBER_STYLES: [(&str, &str); 3] = [
+    ("mirrored", "Cermin"),
+    ("sequential", "Berurutan"),
+    ("mirrored_sequential", "Cermin Berurutan"),
+];
 
 const COLUMN_MODES: [(&str, &str); 3] = [("auto", "Otomatis"), ("1", "1 kolom"), ("2", "2 kolom")];
 
@@ -103,33 +120,38 @@ pub const SUBTITLE_FONTS: [FontChoice; 8] = [
 ];
 
 pub const DEMO_TRACKS: [&str; 19] = [
-    "He Who Reigns Majestic In All The Earth",
-    "Grace Like The Dawn",
-    "Dawn Arrived",
-    "The Dawn Has Arrived",
-    "Child Of Gracious Light",
-    "Anchor Of My Soul Morning Praise",
-    "Glory To Your Name",
-    "New Mercies At The Breaking Day",
-    "Dawn Of Faithful Love",
-    "Upon This Truth I Stand",
-    "I Speak Jesus Morning Praise",
-    "Promise Keeper Light In Darkness",
-    "Awakened",
-    "My Song Of Praise Will Rise",
-    "The Love That Found My Heart",
-    "The Dawn Has Arrived (Reprise)",
-    "My Soul Will Sing Morning Praise",
-    "Beauty Of This Dawn",
-    "Light Over The Mountain Range",
+    "Lorem Ipsum Dolor",
+    "Sit Amet Consectetur",
+    "Adipiscing Elit",
+    "Sed Do Eiusmod",
+    "Tempor Incididunt",
+    "Ut Labore Et Dolore",
+    "Magna Aliqua",
+    "Ut Enim Ad Minim",
+    "Veniam Quis Nostrud",
+    "Exercitation Ullamco",
+    "Laboris Nisi Ut",
+    "Aliquip Ex Ea",
+    "Commodo Consequat",
+    "Duis Aute Irure",
+    "Dolor In Reprehenderit",
+    "Voluptate Velit Esse",
+    "Cillum Dolore Eu",
+    "Fugiat Nulla Pariatur",
+    "Excepteur Sint Occaecat",
 ];
 
 pub struct ThumbnailState {
     pub title: String,
     pub subtitle: String,
     pub timestamp: f64,
+    pub manual_image: Option<PathBuf>,
     pub column_mode: usize,
-    pub mirrored_numbers: bool,
+    pub number_style: usize,
+    pub use_first_title: bool,
+    pub subtitle_visible: bool,
+    pub track_font_preset: usize,
+    pub track_custom_font: Option<PathBuf>,
     pub title_size: u32,
     pub track_size: u32,
     pub subtitle_size: u32,
@@ -148,6 +170,7 @@ pub struct ThumbnailState {
     pub subtitle_font_preset: usize,
     pub subtitle_custom_font: Option<PathBuf>,
     pub preview_frame: Option<PathBuf>,
+    pub preview_source: Option<PathBuf>,
     pub extracting_frame: bool,
     pub busy: bool,
     pub result: Option<PathBuf>,
@@ -156,11 +179,16 @@ pub struct ThumbnailState {
 impl Default for ThumbnailState {
     fn default() -> Self {
         Self {
-            title: "Powerful Worship".to_owned(),
-            subtitle: "Hillsong Worship".to_owned(),
+            title: String::new(),
+            subtitle: String::new(),
             timestamp: 0.0,
+            manual_image: None,
             column_mode: 0,
-            mirrored_numbers: true,
+            number_style: 0,
+            use_first_title: true,
+            subtitle_visible: true,
+            track_font_preset: 7,
+            track_custom_font: None,
             title_size: 120,
             track_size: 36,
             subtitle_size: 80,
@@ -179,6 +207,7 @@ impl Default for ThumbnailState {
             subtitle_font_preset: 0, // Segoe Script
             subtitle_custom_font: None,
             preview_frame: None,
+            preview_source: None,
             extracting_frame: false,
             busy: false,
             result: None,
@@ -187,11 +216,43 @@ impl Default for ThumbnailState {
 }
 
 impl ThumbnailState {
-    pub fn reset_worship_preset(&mut self) {
-        self.title = "Powerful Worship".to_owned();
-        self.subtitle = "Hillsong Worship".to_owned();
+    fn set_manual_image(&mut self, path: PathBuf) -> Result<(u32, u32), String> {
+        let dimensions = image::ImageReader::open(&path)
+            .and_then(|reader| reader.with_guessed_format())
+            .map_err(|error| error.to_string())?
+            .into_dimensions()
+            .map_err(|error| error.to_string())?;
+        if dimensions.0 == 0 || dimensions.1 == 0 {
+            return Err("Ukuran gambar tidak valid.".into());
+        }
+        self.manual_image = Some(path);
+        self.result = None;
+        Ok(dimensions)
+    }
+
+    fn manual_source(&self) -> Option<(PathBuf, bool, f64)> {
+        self.manual_image
+            .as_ref()
+            .filter(|path| path.is_file())
+            .map(|path| (path.clone(), false, 0.0))
+    }
+
+    fn page_source(
+        &self,
+        generate_video: Option<(PathBuf, bool, f64)>,
+    ) -> Option<(PathBuf, bool, f64)> {
+        self.manual_source().or(generate_video)
+    }
+
+    pub fn reset_example_preset(&mut self) {
+        self.title.clear();
+        self.subtitle.clear();
         self.column_mode = 0;
-        self.mirrored_numbers = true;
+        self.number_style = 0;
+        self.use_first_title = true;
+        self.subtitle_visible = true;
+        self.track_font_preset = 7;
+        self.track_custom_font = None;
         self.title_size = 120;
         self.track_size = 36;
         self.subtitle_size = 80;
@@ -314,6 +375,11 @@ impl StudioApp {
                 extras.push(("subtitle_custom", bytes));
             }
         }
+        if let Some(path) = &self.thumbnail.track_custom_font {
+            if let Ok(bytes) = std::fs::read(path) {
+                extras.push(("track_custom", bytes));
+            }
+        }
         if let Some(path) = &self.style.custom_font {
             if let Ok(bytes) = std::fs::read(path) {
                 extras.push(("karaoke_custom", bytes));
@@ -323,72 +389,134 @@ impl StudioApp {
     }
 
     pub(super) fn thumbnail_tab(&mut self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
+        let p = theme::Palette::of(ui.ctx());
+        ui.spacing_mut().interact_size.y = 32.0;
+        ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+        widgets.inactive.bg_fill = p.bg;
+        widgets.inactive.weak_bg_fill = p.bg;
+        widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+        widgets.active.corner_radius = egui::CornerRadius::same(8);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.page_title("Thumbnail");
+        ui.muted_label(
+            "Buat thumbnail mandiri dari gambar Anda atau gunakan video dan playlist Generate. Ekspor JPG Full HD.",
+        )
+        .on_hover_text(help::HEADING);
+        ui.add_space(4.0);
+        generate_card(ui, |ui| {
+            card_header(
+                ui,
+                GenerateIcon::Sliders,
+                "Editor Thumbnail",
+                "Teks, daftar lagu, dan latar dalam satu preview.",
+            );
+            ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                theme::heading_with_info(
-                    ui,
-                    "Thumbnail YouTube — Editor & Pratinjau Interaktif",
-                    help::HEADING,
-                );
-                ui.add_space(8.0);
-                if ui
-                    .button("✨ Muat Contoh Seperti Gambar (Preset Worship)")
-                    .on_hover_text("Terapkan pengaturan font, warna gold, susunan 2 kolom cermin, dan vignette seperti gambar referensi")
-                    .clicked()
+                if outline_icon_button(ui, GenerateIcon::Folder, "Unggah Gambar").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Gambar", &loopkaraoke::media::IMAGE_EXTENSIONS)
+                        .pick_file()
+                    {
+                        self.set_thumbnail_image(path);
+                    }
+                }
+                if self.thumbnail.manual_source().is_none()
+                    && self.generate.video.is_some()
+                    && outline_icon_button(ui, GenerateIcon::Reset, "Pilih Acak").clicked()
                 {
-                    self.thumbnail.reset_worship_preset();
+                    let duration = self
+                        .generate
+                        .video
+                        .as_ref()
+                        .map_or(0.1, |video| video.duration.max(0.1));
+                    use rand::Rng;
+                    self.thumbnail.timestamp = rand::thread_rng().gen_range(0.0..duration);
+                    self.extract_thumbnail_frame();
+                }
+                if outline_icon_button(ui, GenerateIcon::Reset, "Contoh Playlist").clicked() {
+                    self.thumbnail.reset_example_preset();
                     self.reload_egui_fonts();
-                    self.info("Preset Worship berhasil dimuat.");
+                    self.info("Contoh Playlist berhasil dimuat.");
+                }
+                if outline_icon_button(ui, GenerateIcon::Play, "Buka Generate").clicked() {
+                    self.tab = Tab::Generate;
                 }
             });
-            ui.weak(
-                "Rancang thumbnail YouTube berkualitas 1920x1080. Pratinjau di sisi kanan berubah otomatis secara langsung saat formulir diubah.",
-            );
+            if let Some(path) = self.thumbnail.manual_image.clone() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.muted_label(path.file_name().unwrap_or_default().to_string_lossy())
+                        .on_hover_text(path.display().to_string());
+                    if outline_icon_button(ui, GenerateIcon::Trash, "Hapus Pilihan").clicked() {
+                        self.thumbnail.manual_image = None;
+                        self.thumbnail.result = None;
+                    }
+                });
+            }
+            ui.muted_label("Gambar unggahan dipakai terlebih dahulu. Jika tidak ada, latar otomatis memakai video Generate. Daftar lagu mengikuti Playlist.");
+            ui.muted_label("Opsi “Tampilkan di Video” hanya berlaku untuk Render Old; sumber thumbnail tetap gambar unggahan atau video Generate.");
         });
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        ui.columns(2, |columns| {
-            self.thumbnail_fields(&mut columns[0]);
-            self.thumbnail_output(&mut columns[1]);
-        });
+        if ui.available_width() >= 1080.0 {
+            ui.columns(2, |columns| {
+                self.thumbnail_fields(&mut columns[0]);
+                self.thumbnail_output(&mut columns[1]);
+            });
+        } else {
+            self.thumbnail_output(ui);
+            ui.add_space(8.0);
+            self.thumbnail_fields(ui);
+        }
     }
 
     fn thumbnail_fields(&mut self, ui: &mut egui::Ui) {
+        let p = theme::Palette::of(ui.ctx());
         let frame = egui::Frame::new()
-            .fill(theme::PANEL_BG)
-            .stroke(egui::Stroke::new(1.0_f32, theme::FIELD_BORDER))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(10));
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(12)
+            .inner_margin(egui::Margin::symmetric(16, 12));
 
         let mut trigger_font_reload = false;
 
         // Card 1: Teks & Tipografi
         frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             let max_w = ui.available_width();
             ui.set_width(max_w);
             ui.set_max_width(max_w);
-            ui.strong("1. Teks, Tipografi & Font");
+            card_header(ui, GenerateIcon::Sliders, "Teks & Tipografi", "Judul besar, sub judul, font, dan warna.");
             ui.add_space(4.0);
+            let first_title = self.generate.tracks.first()
+                .map(|track| loopkaraoke::media::clean_proper_title(&track.title));
             let state = &mut self.thumbnail;
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Judul Utama:", help::TITLE);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut state.title_on_video, "Tampilkan di Video")
                         .on_hover_text("Jika dicentang, teks Judul Utama juga ditampilkan pada video; jika tidak, hanya tampil di Thumbnail.");
+                    if first_title.is_some() {
+                        ui.checkbox(&mut state.use_first_title, "Judul Pertama")
+                            .on_hover_text("Gunakan judul lagu pertama dari Playlist. Otomatis mengikuti perubahan urutan.");
+                    }
                 });
             });
-            ui.add(
-                egui::TextEdit::singleline(&mut state.title)
-                    .hint_text("Misal: Powerful Worship")
+            let automatic_title = state.use_first_title && first_title.is_some();
+            let mut first_title_text = first_title.unwrap_or_default();
+            let title_input = if automatic_title { &mut first_title_text } else { &mut state.title };
+            ui.add_enabled(!automatic_title,
+                egui::TextEdit::singleline(title_input)
+                    .hint_text(egui::RichText::new(EXAMPLE_TITLE).color(p.text_muted))
+                    .background_color(p.bg)
+                    .vertical_align(egui::Align::Center)
+                    .margin(egui::Margin::symmetric(10, 6))
                     .desired_width(f32::INFINITY),
             );
 
             // Font Selector Judul Utama
             ui.horizontal_wrapped(|ui| {
-                ui.label("Font Judul:");
+                ui.label("Font Judul Utama:");
                 let current_title_label = if let Some(path) = &state.title_custom_font {
                     path.file_name()
                         .unwrap_or_default()
@@ -399,6 +527,8 @@ impl StudioApp {
                 };
 
                 egui::ComboBox::from_id_salt("title_font_select")
+                    .width(ui.available_width().min(280.0))
+                    .truncate()
                     .selected_text(current_title_label)
                     .show_ui(ui, |ui| {
                         for (idx, font) in TITLE_FONTS.iter().enumerate() {
@@ -417,8 +547,7 @@ impl StudioApp {
                         }
                     });
 
-                if ui
-                    .button("📁 Unggah Font...")
+                if outline_icon_button(ui, GenerateIcon::Folder, "Pilih File Font")
                     .on_hover_text("Pilih berkas font (.ttf / .otf) dari komputer Anda")
                     .clicked()
                 {
@@ -433,33 +562,36 @@ impl StudioApp {
                 }
 
                 if state.title_custom_font.is_some()
-                    && ui.small_button("✕ Reset ke Default").clicked()
+                    && outline_icon_button(ui, GenerateIcon::Reset, "Reset Font").clicked()
                 {
                     state.title_custom_font = None;
                     trigger_font_reload = true;
                 }
             });
 
-            ui.horizontal_wrapped(|ui| {
-                theme::label_with_info(ui, "Ukuran:", help::TITLE_SIZE);
-                ui.add(egui::Slider::new(&mut state.title_size, 40..=240));
-                ui.label("Posisi Y:");
-                ui.add(egui::Slider::new(&mut state.title_y_pct, 0.01..=0.30).text("%"));
-                theme::label_with_info(ui, "Warna:", help::COLORS);
+            thumbnail_slider(ui, "Ukuran Judul", &mut state.title_size, 40..=240, " px", 0, None, true);
+            thumbnail_percentage(ui, "Posisi Y", &mut state.title_y_pct, 1.0..=30.0);
+            ui.horizontal(|ui| {
+                theme::label_with_info(ui, "Warna Judul:", help::COLORS);
                 ui.color_edit_button_srgb(&mut state.title_color);
             });
             ui.add_space(8.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Sub Judul / Artis / Branding:", help::SUBTITLE);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut state.subtitle_on_video, "Tampilkan di Video")
                         .on_hover_text("Jika tidak dicentang, teks Sub Judul hanya tampil di Thumbnail dan tidak tampil di video.");
+                    ui.checkbox(&mut state.subtitle_visible, "Tampilkan Sub Judul")
+                        .on_hover_text("Sembunyikan Sub Judul pada preview, thumbnail, dan overlay video tanpa menghapus teksnya.");
                 });
             });
             ui.add(
                 egui::TextEdit::singleline(&mut state.subtitle)
-                    .hint_text("Misal: Hillsong Worship")
+                    .hint_text(egui::RichText::new(EXAMPLE_SUBTITLE).color(p.text_muted))
+                    .background_color(p.bg)
+                    .vertical_align(egui::Align::Center)
+                    .margin(egui::Margin::symmetric(10, 6))
                     .desired_width(f32::INFINITY),
             );
 
@@ -476,6 +608,8 @@ impl StudioApp {
                 };
 
                 egui::ComboBox::from_id_salt("subtitle_font_select")
+                    .width(ui.available_width().min(280.0))
+                    .truncate()
                     .selected_text(current_sub_label)
                     .show_ui(ui, |ui| {
                         for (idx, font) in SUBTITLE_FONTS.iter().enumerate() {
@@ -494,8 +628,7 @@ impl StudioApp {
                         }
                     });
 
-                if ui
-                    .button("📁 Unggah Font...")
+                if outline_icon_button(ui, GenerateIcon::Folder, "Pilih File Font")
                     .on_hover_text("Pilih berkas font (.ttf / .otf) dari komputer Anda")
                     .clicked()
                 {
@@ -510,37 +643,24 @@ impl StudioApp {
                 }
 
                 if state.subtitle_custom_font.is_some()
-                    && ui.small_button("✕ Reset ke Default").clicked()
+                    && outline_icon_button(ui, GenerateIcon::Reset, "Reset Font").clicked()
                 {
                     state.subtitle_custom_font = None;
                     trigger_font_reload = true;
                 }
             });
 
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Ukuran:");
-                ui.add(egui::Slider::new(&mut state.subtitle_size, 20..=160));
-                ui.label("Posisi Y:");
-                ui.add(egui::Slider::new(&mut state.subtitle_y_pct, 0.65..=0.95).text("%"));
-                ui.label("Warna:");
-                ui.color_edit_button_srgb(&mut state.subtitle_color);
-                ui.small("(Disarankan warna emas/kuning)");
-            });
-        });
-        ui.add_space(8.0);
-
-        if trigger_font_reload {
-            self.reload_egui_fonts();
-        }
-
-        // Card 2: Tata Letak Daftar Lagu (Tracklist)
-        frame.show(ui, |ui| {
-            let max_w = ui.available_width();
-            ui.set_width(max_w);
-            ui.set_max_width(max_w);
-            let state = &mut self.thumbnail;
+            thumbnail_slider(ui, "Ukuran Sub Judul", &mut state.subtitle_size, 20..=160, " px", 0, None, true);
+            thumbnail_percentage(ui, "Posisi Y", &mut state.subtitle_y_pct, 65.0..=95.0);
             ui.horizontal(|ui| {
-                ui.strong("2. Tata Letak Daftar Lagu (Tracklist)");
+                ui.muted_label("Warna Sub Judul:");
+                ui.color_edit_button_srgb(&mut state.subtitle_color);
+            });
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Tata Letak Daftar Lagu");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut state.tracklist_on_video, "Tampilkan di Video")
                         .on_hover_text("Jika dicentang, daftar judul lagu (tracklist) juga ditampilkan pada video; jika tidak, hanya tampil di Thumbnail.");
@@ -550,6 +670,8 @@ impl StudioApp {
             ui.horizontal_wrapped(|ui| {
                 theme::label_with_info(ui, "Mode Kolom:", help::COLUMNS);
                 egui::ComboBox::from_id_salt("thumbnail_columns_mode")
+                    .width(ui.available_width().min(280.0))
+                    .truncate()
                     .selected_text(COLUMN_MODES[state.column_mode].1)
                     .show_ui(ui, |ui| {
                         for (index, (_, label)) in COLUMN_MODES.iter().enumerate() {
@@ -560,97 +682,80 @@ impl StudioApp {
             ui.add_space(3.0);
 
             ui.horizontal_wrapped(|ui| {
-                theme::label_with_info(ui, "Nomor Kolom Kanan:", help::NUMBERING);
-                ui.radio_value(&mut state.mirrored_numbers, true, "Cermin (Judul .01)");
-                ui.radio_value(&mut state.mirrored_numbers, false, "Berurutan (11. Judul)");
+                theme::label_with_info(ui, "Penomoran:", help::NUMBERING);
+                egui::ComboBox::from_id_salt("thumbnail_number_style")
+                    .width(ui.available_width().min(280.0)).truncate()
+                    .selected_text(NUMBER_STYLES[state.number_style].1)
+                    .show_ui(ui, |ui| {
+                        for (index, (_, label)) in NUMBER_STYLES.iter().enumerate() {
+                            ui.selectable_value(&mut state.number_style, index, *label);
+                        }
+                    });
             });
-            ui.add_space(3.0);
+            ui.add_space(6.0);
+            if thumbnail_track_font_picker(ui, &mut state.track_font_preset, &mut state.track_custom_font) {
+                trigger_font_reload = true;
+            }
+            ui.add_space(6.0);
 
-            ui.horizontal_wrapped(|ui| {
-                theme::label_with_info(ui, "Ukuran Lagu:", help::TRACK_SIZE);
-                ui.add(egui::Slider::new(&mut state.track_size, 16..=64));
-                ui.label("Warna:");
+            thumbnail_slider(ui, "Ukuran Lagu", &mut state.track_size, 16..=64, " px", 0, None, true);
+            ui.horizontal(|ui| {
+                ui.muted_label("Warna Daftar Lagu:");
                 ui.color_edit_button_srgb(&mut state.track_color);
             });
             ui.add_space(4.0);
 
-            if self.tracks.is_empty() {
-                ui.colored_label(
-                    theme::FOCUS,
-                    "ℹ Belum ada lagu di playlist; menampilkan 19 lagu contoh (demo) seperti pada gambar referensi.",
-                );
+            if self.generate.tracks.is_empty() {
+                ui.muted_label("Belum ada lagu Generate. Preview memakai daftar contoh.");
             } else {
-                ui.colored_label(
-                    theme::SUCCESS,
-                    format!("✓ Menggunakan {} lagu dari playlist Anda saat ini.", self.tracks.len()),
-                );
+                ui.colored_label(p.success, format!("Menggunakan {} lagu dari Generate.", self.generate.tracks.len()));
             }
         });
         ui.add_space(8.0);
 
         // Card 3: Latar Belakang & Vignette (Limit Sesuai Durasi Video)
         frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             let max_w = ui.available_width();
             ui.set_width(max_w);
             ui.set_max_width(max_w);
-            ui.strong("3. Latar Belakang & Efek Visual");
+            card_header(ui, GenerateIcon::Folder, "Latar & Efek", "Pilih gambar sendiri atau frame video Generate, lalu atur efek latar.");
             ui.add_space(4.0);
 
-            let bg_info = self.background.as_ref().map(|bg| {
-                (
-                    bg.image.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().to_string()),
-                    bg.video.filename.clone(),
-                    bg.video.duration,
-                )
-            });
-
-            let mut trigger_extract = false;
-            if let Some((img_name, vid_name, vid_duration)) = bg_info {
-                if let Some(name) = img_name {
-                    ui.label(format!("🖼 Gambar latar: {name}"));
-                } else {
-                    ui.label(format!("🎬 Video latar: {vid_name}"));
-                    let max_dur = vid_duration.max(0.1);
-                    self.thumbnail.timestamp = self.thumbnail.timestamp.clamp(0.0, max_dur);
-
-                    ui.horizontal_wrapped(|ui| {
-                        theme::label_with_info(ui, "Ambil frame detik:", help::FRAME);
-                        ui.add(
-                            egui::Slider::new(&mut self.thumbnail.timestamp, 0.0..=max_dur)
-                                .custom_formatter(|val, _| format!("{val:.1}s / {max_dur:.1}s"))
-                                .text("detik"),
-                        );
-                        let extracting = self.thumbnail.extracting_frame;
-                        let btn = if extracting {
-                            egui::Button::new("⏳ Mengambil...")
-                        } else {
-                            egui::Button::new("📸 Ambil Frame Video")
-                        };
-                        if ui.add_enabled(!extracting, btn).clicked() {
-                            trigger_extract = true;
-                        }
-                    });
-                    ui.small(format!("⏱ Batas waktu frame sesuai durasi video: 0.0s – {:.1}s", max_dur));
-                }
+            if let Some((image, _, _)) = self.thumbnail.manual_source() {
+                ui.muted_label(format!("Latar dari gambar manual: {}", image.file_name().unwrap_or_default().to_string_lossy()));
             } else {
-                ui.weak("Belum ada video/gambar background dipilih di Main Menu.");
-                ui.small("Menggunakan gradasi pemandangan gunung simulasi untuk pratinjau.");
+            let bg_info = self.generate.video.as_ref().map(|video| (video.filename.clone(), video.duration));
+            if let Some((name, duration)) = bg_info {
+                ui.muted_label(format!("Video Generate: {name}"));
+                let max_dur = duration.max(0.1);
+                self.thumbnail.timestamp = self.thumbnail.timestamp.clamp(0.0, max_dur);
+                let extracting = self.thumbnail.extracting_frame;
+                let trigger_extract = thumbnail_slider(
+                    ui,
+                    "Posisi Frame",
+                    &mut self.thumbnail.timestamp,
+                    0.0..=max_dur,
+                    " s",
+                    1,
+                    Some(if extracting { "Mengambil frame..." } else { "Ambil Frame" }),
+                    !extracting,
+                );
+                if trigger_extract {
+                    self.extract_thumbnail_frame();
+                }
+                ui.muted_label(format!("Rentang frame: 0–{max_dur:.1} detik."));
+            } else {
+                ui.muted_label("Pilih video di Generate untuk mengambil frame dan mengekspor thumbnail.");
             }
 
-            if trigger_extract {
-                self.extract_thumbnail_frame();
             }
 
             ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
-                theme::label_with_info(ui, "Gelap di Tepi (Vignette):", help::VIGNETTE);
-                ui.add(egui::Slider::new(&mut self.thumbnail.vignette, 0.0..=1.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.checkbox(&mut self.thumbnail.vignette_on_video, "Tampilkan di Video")
-                        .on_hover_text("Jika tidak dicentang, efek gelap di tepi (vignette) hanya tampil di Thumbnail dan tidak tampil di video.");
-                });
-            });
+            thumbnail_percentage(ui, "Gelap di Tepi (Vignette)", &mut self.thumbnail.vignette, 0.0..=100.0);
+            ui.checkbox(&mut self.thumbnail.vignette_on_video, "Tampilkan Vignette di Video")
+                .on_hover_text("Aktifkan vignette saat render melalui Render Old.");
             ui.small("Membantu teks putih dan emas terlihat kontras dan terbaca jelas pada latar terang.");
         });
         ui.add_space(8.0);
@@ -660,52 +765,54 @@ impl StudioApp {
             let max_w = ui.available_width();
             ui.set_width(max_w);
             ui.set_max_width(max_w);
-            ui.strong("4. Simpan & Ekspor Berkas");
+            card_header(
+                ui,
+                GenerateIcon::Upload,
+                "Ekspor Thumbnail",
+                "Gambar JPG 1920×1080 untuk sampul album.",
+            );
             ui.add_space(4.0);
 
             let busy = self.thumbnail.busy;
-            let btn = if busy {
-                theme::StyledButton::secondary("⏳ Sedang Merender Thumbnail...")
+            let label = if busy {
+                "Sedang Merender Thumbnail..."
             } else {
-                theme::primary_button("🚀 Buat Thumbnail Full HD (1920x1080)")
+                "Buat Thumbnail Full HD (1920x1080)"
             };
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!busy, btn).clicked() {
-                    self.generate_thumbnail();
-                }
-                theme::info(ui, help::GENERATE);
-            });
+            if primary_render_button(ui, label, !busy && self.thumbnail_source().is_some())
+                .clicked()
+            {
+                self.generate_thumbnail();
+            }
             ui.add_space(2.0);
             ui.small(
                 "Disimpan di folder output dalam resolusi 1920x1080 Full HD (standar YouTube).",
             );
-            if self.auto_generate_thumbnail {
-                ui.colored_label(
-                    theme::SUCCESS,
-                    "✓ 'Buat Thumbnail Otomatis' juga aktif saat merender video dari Main Menu.",
-                );
-            }
         });
+        if trigger_font_reload {
+            self.reload_egui_fonts();
+        }
     }
 
     fn thumbnail_output(&mut self, ui: &mut egui::Ui) {
+        let p = theme::Palette::of(ui.ctx());
         let frame = egui::Frame::new()
-            .fill(theme::FIELD_BG)
-            .stroke(egui::Stroke::new(1.0_f32, theme::FIELD_BORDER))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::same(12));
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(12)
+            .inner_margin(egui::Margin::symmetric(16, 12));
 
         frame.show(ui, |ui| {
             let max_w = ui.available_width();
             ui.set_width(max_w);
             ui.set_max_width(max_w);
-            ui.horizontal(|ui| {
-                ui.strong("Pratinjau Langsung (Canvas 16:9)");
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Preview Thumbnail");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new("1920x1080 Full HD")
                             .size(11.0)
-                            .color(theme::FOCUS),
+                            .color(p.accent),
                     );
                 });
             });
@@ -716,21 +823,21 @@ impl StudioApp {
 
             ui.add_space(8.0);
             ui.small(
-                "💡 Pratinjau interaktif real-time: teks, font kustom, ukuran font, tata letak cermin, dan vignette otomatis sinkron.",
+                "💡 Preview interaktif real-time: teks, font kustom, ukuran font, tata letak cermin, dan vignette otomatis sinkron.",
             );
 
             if let Some(path) = self.thumbnail.result.clone() {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(6.0);
-                ui.colored_label(theme::SUCCESS, "✓ Berkas Thumbnail Berhasil Dibuat:");
+                ui.colored_label(p.success, "✓ Berkas Thumbnail Berhasil Dibuat:");
                 ui.label(path.display().to_string());
-                ui.horizontal(|ui| {
-                    if ui.button("🖼 Buka Gambar").clicked() {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(theme::StyledButton::secondary("Buka Gambar").min_size(egui::vec2(120.0, 36.0))).clicked() {
                         let _ = open_path(&path);
                     }
-                    if ui.button("📁 Buka Folder Output").clicked() {
-                        let _ = open_path(&self.paths.outputs);
+                    if ui.add(theme::StyledButton::secondary("Buka Folder").min_size(egui::vec2(120.0, 36.0))).clicked() {
+                        let _ = open_path(path.parent().unwrap_or(&self.paths.outputs));
                     }
                 });
             }
@@ -745,26 +852,8 @@ impl StudioApp {
         let (rect, _response) =
             ui.allocate_exact_size(Vec2::new(canvas_w, canvas_h), egui::Sense::hover());
 
-        // Background source
-        let bg_path = if let Some(frame) = &self.thumbnail.preview_frame {
-            if frame.is_file() {
-                Some(frame.clone())
-            } else {
-                None
-            }
-        } else if let Some(bg) = &self.background {
-            if let Some(img) = &bg.image {
-                if img.is_file() {
-                    Some(img.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // Preview and export resolve the same media source.
+        let bg_path = self.thumbnail_preview_path();
 
         if let Some(path) = bg_path {
             ui.put(
@@ -784,20 +873,19 @@ impl StudioApp {
 
     pub(super) fn build_thumbnail_spec(&self, for_video: bool) -> ThumbnailSpec {
         let state = &self.thumbnail;
-        let track_titles: Vec<String> = if for_video && !state.tracklist_on_video {
-            Vec::new()
-        } else if self.tracks.is_empty() {
-            if for_video {
-                Vec::new()
-            } else {
-                DEMO_TRACKS.iter().map(|&s| s.to_string()).collect()
-            }
+        let titles = if self.thumbnail_uses_generate() {
+            self.generate
+                .tracks
+                .iter()
+                .map(|track| track.title.clone())
+                .collect()
         } else {
             self.tracks
                 .iter()
                 .map(|track| track.title.clone())
                 .collect()
         };
+        let track_titles = thumbnail_track_titles(titles, for_video, state.tracklist_on_video);
 
         let title_font_path = resolve_font_path(
             &state.title_custom_font,
@@ -810,23 +898,30 @@ impl StudioApp {
 
         ThumbnailSpec {
             title: if !for_video || state.title_on_video {
-                state.title.clone()
+                thumbnail_title(
+                    &state.title,
+                    state.use_first_title,
+                    if self.thumbnail_uses_generate() {
+                        self.generate
+                            .tracks
+                            .first()
+                            .map(|track| track.title.as_str())
+                    } else {
+                        self.tracks.first().map(|track| track.title.as_str())
+                    },
+                )
             } else {
                 String::new()
             },
-            subtitle: if !for_video || state.subtitle_on_video {
-                state.subtitle.clone()
-            } else {
-                String::new()
-            },
+            subtitle: thumbnail_subtitle(
+                &state.subtitle,
+                state.subtitle_visible,
+                for_video,
+                state.subtitle_on_video,
+            ),
             track_titles,
             column_mode: COLUMN_MODES[state.column_mode].0.to_owned(),
-            number_style: if state.mirrored_numbers {
-                "mirrored"
-            } else {
-                "sequential"
-            }
-            .to_owned(),
+            number_style: NUMBER_STYLES[state.number_style].0.to_owned(),
             title_font_size: state.title_size,
             track_font_size: state.track_size,
             subtitle_font_size: state.subtitle_size,
@@ -842,11 +937,15 @@ impl StudioApp {
             subtitle_y_pct: state.subtitle_y_pct,
             title_font_path,
             subtitle_font_path,
+            track_font_path: resolve_font_path(
+                &state.track_custom_font,
+                &TITLE_FONTS[state.track_font_preset],
+            ),
         }
     }
 
     /// Menggambar overlay judul/daftar lagu/sub judul dan mengembalikan area teks yang digambar
-    /// (dipakai pratinjau Karaoke untuk mendeteksi tumpukan).
+    /// (dipakai preview Karaoke untuk mendeteksi tumpukan).
     pub(super) fn draw_thumbnail_overlay(
         &self,
         painter: &egui::Painter,
@@ -915,7 +1014,12 @@ impl StudioApp {
             state.track_color[1],
             state.track_color[2],
         );
-        let track_font = FontId::new(track_scale, egui::FontFamily::Name(theme::SEMIBOLD.into()));
+        let track_family = if state.track_custom_font.is_some() {
+            "track_custom"
+        } else {
+            TITLE_FONTS[state.track_font_preset].id
+        };
+        let track_font = FontId::new(track_scale, egui::FontFamily::Name(track_family.into()));
         let outline_thickness = (2.2 * scale).max(0.6);
 
         for row in rows {
@@ -961,28 +1065,85 @@ impl StudioApp {
         drawn
     }
 
+    pub(super) fn set_thumbnail_image(&mut self, path: PathBuf) {
+        match self.thumbnail.set_manual_image(path) {
+            Ok((width, height)) => self.info(format!("Gambar thumbnail siap: {width}x{height}.")),
+            Err(error) => self.error(format!("Gambar tidak dapat dibaca: {error}")),
+        }
+    }
+
+    pub(super) fn thumbnail_uses_generate(&self) -> bool {
+        matches!(self.tab, Tab::Thumbnail | Tab::Karaoke)
+    }
+
+    fn thumbnail_source(&self) -> Option<(PathBuf, bool, f64)> {
+        if self.tab == Tab::Thumbnail {
+            return self.thumbnail.page_source(
+                self.generate
+                    .video
+                    .as_ref()
+                    .map(|video| (video.path.clone().into(), true, video.duration)),
+            );
+        }
+        if self.thumbnail_uses_generate() {
+            self.generate
+                .video
+                .as_ref()
+                .map(|video| (video.path.clone().into(), true, video.duration))
+        } else {
+            self.background.as_ref().map(|background| {
+                (
+                    background
+                        .image
+                        .clone()
+                        .unwrap_or_else(|| background.video.path.clone().into()),
+                    background.image.is_none(),
+                    background.video.duration,
+                )
+            })
+        }
+    }
+
+    pub(super) fn thumbnail_preview_path(&self) -> Option<PathBuf> {
+        let (source, is_video, _) = self.thumbnail_source()?;
+        if !is_video {
+            return source.is_file().then_some(source);
+        }
+        if self.thumbnail.preview_source.as_ref() == Some(&source) {
+            self.thumbnail
+                .preview_frame
+                .as_ref()
+                .filter(|path| path.is_file())
+                .cloned()
+        } else {
+            None
+        }
+    }
+
     pub(super) fn generate_thumbnail(&mut self) {
-        let Some(background) = &self.background else {
-            self.error("Pilih video atau gambar background terlebih dahulu.");
+        let Some((source, is_video, duration)) = self.thumbnail_source() else {
+            self.error("Pilih gambar manual atau video Generate terlebih dahulu. Untuk Render Old, pilih media di halaman tersebut.");
             return;
         };
-        let is_video = background.image.is_none();
-        let source = background
-            .image
-            .clone()
-            .unwrap_or_else(|| background.video.path.clone().into());
         let spec = self.build_thumbnail_spec(false);
-        let state = &self.thumbnail;
-
-        let timestamp = if is_video && background.video.duration > 0.0 {
-            state.timestamp.clamp(0.0, background.video.duration)
+        let timestamp = if is_video && duration > 0.0 {
+            self.thumbnail.timestamp.clamp(0.0, duration)
         } else {
             0.0
         };
-        let output = self
-            .paths
-            .outputs
-            .join(format!("thumbnail_{}.jpg", random_id(8)));
+        let output_dir = if self.thumbnail_uses_generate() {
+            self.generate
+                .output_dir
+                .as_ref()
+                .unwrap_or(&self.paths.outputs)
+        } else {
+            &self.paths.outputs
+        };
+        if let Err(error) = std::fs::create_dir_all(output_dir) {
+            self.error(format!("Gagal membuat folder output: {error}"));
+            return;
+        }
+        let output = output_dir.join(format!("thumbnail_{}.jpg", random_id(8)));
         let (tools, temp) = (self.tools.clone(), self.paths.temp.clone());
 
         self.thumbnail.busy = true;
@@ -1001,15 +1162,17 @@ impl StudioApp {
     }
 
     pub(super) fn extract_thumbnail_frame(&mut self) {
-        let Some(background) = &self.background else {
+        let Some((video_path, is_video, max_dur)) = self.thumbnail_source() else {
             return;
         };
-        if let Some(image_path) = &background.image {
-            self.thumbnail.preview_frame = Some(image_path.clone());
+        if !is_video {
+            self.thumbnail.preview_frame = Some(video_path.clone());
+            self.thumbnail.preview_source = Some(video_path);
             return;
         }
-        let video_path = PathBuf::from(&background.video.path);
-        let max_dur = background.video.duration;
+        if self.thumbnail.extracting_frame {
+            return;
+        }
         let timestamp = if max_dur > 0.0 {
             self.thumbnail.timestamp.clamp(0.0, max_dur)
         } else {
@@ -1024,14 +1187,183 @@ impl StudioApp {
         self.log(
             LogLevel::Info,
             format!(
-                "Mengambil frame video di detik {:.1}s untuk pratinjau thumbnail...",
+                "Mengambil frame video di detik {:.1}s untuk preview thumbnail...",
                 timestamp
             ),
         );
         self.spawn(async move {
             let res = thumbnail::extract_frame(&tools, &video_path, timestamp, &output).await;
-            Event::ThumbnailFrame(res.map(|()| output))
+            Event::ThumbnailFrame {
+                source: video_path,
+                result: res.map(|()| output),
+            }
         });
+    }
+}
+
+fn thumbnail_track_font_picker(
+    ui: &mut egui::Ui,
+    preset: &mut usize,
+    custom: &mut Option<PathBuf>,
+) -> bool {
+    let mut changed = false;
+    ui.muted_label("Font Daftar Lagu");
+    ui.horizontal_wrapped(|ui| {
+        let label = custom
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| TITLE_FONTS[*preset].label.to_owned());
+        egui::ComboBox::from_id_salt("track_font_select")
+            .width(ui.available_width().min(280.0))
+            .truncate()
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                for (index, font) in TITLE_FONTS.iter().enumerate() {
+                    if ui
+                        .selectable_label(custom.is_none() && *preset == index, font.label)
+                        .clicked()
+                    {
+                        *preset = index;
+                        *custom = None;
+                        changed = true;
+                    }
+                }
+            });
+        if outline_icon_button(ui, GenerateIcon::Folder, "Pilih File Font").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Font", &["ttf", "otf"])
+                .pick_file()
+            {
+                *custom = Some(path);
+                changed = true;
+            }
+        }
+        if custom.is_some() && outline_icon_button(ui, GenerateIcon::Reset, "Reset Font").clicked()
+        {
+            *custom = None;
+            *preset = 7;
+            changed = true;
+        }
+    });
+    changed
+}
+
+fn thumbnail_title(manual: &str, use_first: bool, first: Option<&str>) -> String {
+    if use_first {
+        if let Some(title) = first {
+            return loopkaraoke::media::clean_proper_title(title);
+        }
+    }
+    thumbnail_text(manual, EXAMPLE_TITLE)
+}
+
+fn thumbnail_subtitle(text: &str, visible: bool, for_video: bool, on_video: bool) -> String {
+    if visible && (!for_video || on_video) {
+        thumbnail_text(text, EXAMPLE_SUBTITLE)
+    } else {
+        String::new()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn thumbnail_slider<T: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+    decimals: usize,
+    action_label: Option<&str>,
+    action_enabled: bool,
+) -> bool {
+    let p = theme::Palette::of(ui.ctx());
+    ui.muted_label(label).on_hover_text(match label {
+        "Ukuran Judul" => help::TITLE_SIZE,
+        "Ukuran Lagu" => help::TRACK_SIZE,
+        "Posisi Frame" => help::FRAME,
+        "Gelap di Tepi (Vignette)" => help::VIGNETTE,
+        _ => "Geser slider, seret nilai angka, atau klik angkanya untuk mengetik nilai.",
+    });
+    let mut action_clicked = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.spacing_mut().interact_size.y = 24.0;
+        let reserved_width = if action_label.is_some() { 205.0 } else { 90.0 };
+        ui.spacing_mut().slider_width = (ui.available_width() - reserved_width).clamp(64.0, 200.0);
+        ui.add(
+            egui::Slider::new(value, range.clone())
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        egui::Frame::new()
+            .fill(p.bg)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(6, 1))
+            .show(ui, |ui| {
+                let visuals = &mut ui.visuals_mut().widgets;
+                visuals.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                visuals.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                visuals.inactive.bg_stroke = egui::Stroke::NONE;
+                ui.add_sized(
+                    [56.0, 26.0],
+                    egui::DragValue::new(value)
+                        .range(range)
+                        .speed(if decimals == 0 { 1.0 } else { 0.1 })
+                        .fixed_decimals(decimals)
+                        .suffix(suffix),
+                );
+            });
+        if let Some(label) = action_label {
+            action_clicked = ui
+                .add_enabled(
+                    action_enabled,
+                    theme::StyledButton::secondary(label).min_size(egui::vec2(112.0, 32.0)),
+                )
+                .clicked();
+        }
+    });
+    ui.add_space(1.0);
+    action_clicked
+}
+
+fn thumbnail_percentage(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) {
+    let mut percent = *value * 100.0;
+    let previous = percent;
+    thumbnail_slider(ui, label, &mut percent, range, " %", 1, None, true);
+    if percent != previous {
+        *value = percent / 100.0;
+    }
+}
+
+fn thumbnail_text(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn thumbnail_track_titles(
+    titles: Vec<String>,
+    for_video: bool,
+    tracklist_on_video: bool,
+) -> Vec<String> {
+    if for_video && !tracklist_on_video {
+        Vec::new()
+    } else if titles.is_empty() && !for_video {
+        DEMO_TRACKS
+            .iter()
+            .map(|title| (*title).to_owned())
+            .collect()
+    } else {
+        titles
     }
 }
 
@@ -1162,6 +1494,87 @@ fn draw_outlined_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_image_source_works_without_generate_and_rejects_invalid_replacements() {
+        let dir = std::env::temp_dir().join(format!("thumbnail-image-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image_path = dir.join("background.png");
+        image::RgbImage::new(12, 8).save(&image_path).unwrap();
+        let mut state = ThumbnailState::default();
+        let generate_video = Some((dir.join("generate.mp4"), true, 30.0));
+        assert_eq!(state.page_source(generate_video.clone()), generate_video);
+        assert!(state.page_source(None).is_none());
+        assert_eq!(state.set_manual_image(image_path.clone()).unwrap(), (12, 8));
+        assert_eq!(
+            state.manual_source(),
+            Some((image_path.clone(), false, 0.0))
+        );
+        assert_eq!(
+            state.page_source(generate_video.clone()),
+            state.manual_source()
+        );
+        let invalid = dir.join("invalid.png");
+        std::fs::write(&invalid, b"not an image").unwrap();
+        assert!(state.set_manual_image(invalid.clone()).is_err());
+        assert_eq!(state.manual_image, Some(image_path.clone()));
+        std::fs::remove_file(&image_path).unwrap();
+        assert!(state.manual_source().is_none());
+        assert_eq!(state.page_source(generate_video.clone()), generate_video);
+        std::fs::remove_file(invalid).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn first_song_title_overrides_manual_text_only_when_enabled_and_available() {
+        assert!(ThumbnailState::default().use_first_title);
+        assert_eq!(
+            thumbnail_title("Manual", true, Some("Lagu Pertama.mp3")),
+            "Lagu Pertama"
+        );
+        assert_eq!(
+            thumbnail_title("Manual", true, Some("Lagu Kedua.mp3")),
+            "Lagu Kedua"
+        );
+        assert_eq!(
+            thumbnail_title("Manual", false, Some("Lagu Pertama.mp3")),
+            "Manual"
+        );
+        assert_eq!(thumbnail_title("Manual", true, None), "Manual");
+        assert_eq!(thumbnail_title("", true, None), EXAMPLE_TITLE);
+    }
+
+    #[test]
+    fn subtitle_visibility_controls_both_thumbnail_and_video_without_losing_text() {
+        assert_eq!(thumbnail_subtitle("Brand", false, false, true), "");
+        assert_eq!(thumbnail_subtitle("Brand", false, true, true), "");
+        assert_eq!(thumbnail_subtitle("Brand", true, false, false), "Brand");
+        assert_eq!(thumbnail_subtitle("Brand", true, true, false), "");
+        assert_eq!(thumbnail_subtitle("Brand", true, true, true), "Brand");
+        assert_eq!(thumbnail_subtitle("", true, false, false), EXAMPLE_SUBTITLE);
+    }
+
+    #[test]
+    fn empty_thumbnail_inputs_use_example_text_without_filling_the_fields() {
+        let state = ThumbnailState::default();
+        assert!(state.title.is_empty() && state.subtitle.is_empty());
+        assert_eq!(thumbnail_text(&state.title, EXAMPLE_TITLE), "Lorem Ipsum");
+        assert_eq!(thumbnail_text("  ", EXAMPLE_SUBTITLE), "Dolor Sit Amet");
+        assert_eq!(thumbnail_text("Album Saya", EXAMPLE_TITLE), "Album Saya");
+    }
+
+    #[test]
+    fn thumbnail_uses_selected_playlist_and_demo_only_for_empty_cover_preview() {
+        let titles = vec!["Lagu Generate B".to_owned(), "Lagu Generate A".to_owned()];
+        assert_eq!(thumbnail_track_titles(titles.clone(), false, false), titles);
+        assert!(thumbnail_track_titles(titles.clone(), true, false).is_empty());
+        assert_eq!(thumbnail_track_titles(titles.clone(), true, true), titles);
+        assert_eq!(
+            thumbnail_track_titles(Vec::new(), false, true).len(),
+            DEMO_TRACKS.len()
+        );
+        assert!(thumbnail_track_titles(Vec::new(), true, true).is_empty());
+    }
 
     #[test]
     fn parses_font_family_name_if_available() {

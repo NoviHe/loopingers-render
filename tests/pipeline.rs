@@ -205,6 +205,7 @@ async fn image_background_is_rebuilt_and_thumbnail_is_drawn() {
         title_y_pct: 0.055,
         subtitle_y_pct: 0.82,
         title_font_path: None,
+        track_font_path: None,
         subtitle_font_path: None,
     };
     thumbnail::render(

@@ -54,12 +54,19 @@ pub struct CleanupOptions {
     pub min_age: Option<Duration>,
 }
 
-fn dir_stats(dir: &Path) -> DirStats {
+fn is_gitkeep(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".gitkeep")
+}
+
+fn dir_stats(dir: &Path, hide_gitkeep: bool) -> DirStats {
     let mut files: Vec<(SystemTime, FileEntry)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|entry| {
+            if hide_gitkeep && is_gitkeep(&entry.path()) {
+                return None;
+            }
             let metadata = entry.metadata().ok().filter(fs::Metadata::is_file)?;
             let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
             Some((
@@ -88,13 +95,13 @@ fn dir_stats(dir: &Path) -> DirStats {
 }
 
 pub fn stats(paths: &AppPaths) -> StorageStats {
-    let temp = dir_stats(&paths.temp);
-    let outputs = dir_stats(&paths.outputs);
+    let temp = dir_stats(&paths.temp, false);
+    let outputs = dir_stats(&paths.outputs, true);
     let total_app_mb = megabytes(temp.size_bytes + outputs.size_bytes);
     StorageStats {
         temp,
         outputs,
-        models: dir_stats(&paths.models),
+        models: dir_stats(&paths.models, false),
         total_app_mb,
     }
 }
@@ -110,13 +117,17 @@ fn is_old_enough(path: &Path, min_age: Option<Duration>) -> bool {
         .is_some_and(|age| age >= min_age)
 }
 
-fn remove_files(dir: &Path, min_age: Option<Duration>) -> usize {
+fn remove_files(dir: &Path, min_age: Option<Duration>, preserve_gitkeep: bool) -> usize {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_old_enough(path, min_age))
+        .filter(|path| {
+            path.is_file()
+                && !(preserve_gitkeep && is_gitkeep(path))
+                && is_old_enough(path, min_age)
+        })
         .filter(|path| fs::remove_file(path).is_ok())
         .count()
 }
@@ -125,12 +136,12 @@ fn remove_files(dir: &Path, min_age: Option<Duration>) -> usize {
 pub fn cleanup(paths: &AppPaths, options: &CleanupOptions) -> CleanupCounts {
     CleanupCounts {
         temp: if options.clean_temp {
-            remove_files(&paths.temp, options.min_age)
+            remove_files(&paths.temp, options.min_age, false)
         } else {
             0
         },
         outputs: if options.clean_outputs {
-            remove_files(&paths.outputs, options.min_age)
+            remove_files(&paths.outputs, options.min_age, true)
         } else {
             0
         },
@@ -142,7 +153,7 @@ pub fn delete_file(paths: &AppPaths, file: &Path) -> bool {
     let inside = file
         .parent()
         .is_some_and(|parent| parent == paths.outputs || parent == paths.temp);
-    inside && file.is_file() && fs::remove_file(file).is_ok()
+    inside && !is_gitkeep(file) && file.is_file() && fs::remove_file(file).is_ok()
 }
 
 #[cfg(test)]
@@ -222,6 +233,31 @@ mod tests {
         let stats = stats(&paths);
         assert_eq!(stats.outputs.count, 1);
         assert_eq!(stats.outputs.size_bytes, 2048);
+        let _ = fs::remove_dir_all(&paths.data_dir);
+    }
+
+    #[test]
+    fn gitkeep_is_hidden_and_protected_from_output_cleanup() {
+        let paths = temp_paths("gitkeep");
+        let marker = paths.outputs.join(".gitkeep");
+        fs::write(&marker, b"").unwrap();
+        fs::write(paths.outputs.join("render.mp4"), b"video").unwrap();
+
+        let output_stats = stats(&paths).outputs;
+        assert_eq!(output_stats.count, 1);
+        assert_eq!(output_stats.files[0].name, "render.mp4");
+
+        assert!(!delete_file(&paths, &marker));
+        let counts = cleanup(
+            &paths,
+            &CleanupOptions {
+                clean_outputs: true,
+                ..CleanupOptions::default()
+            },
+        );
+        assert_eq!(counts.outputs, 1);
+        assert!(marker.exists());
+        assert!(!paths.outputs.join("render.mp4").exists());
         let _ = fs::remove_dir_all(&paths.data_dir);
     }
 }

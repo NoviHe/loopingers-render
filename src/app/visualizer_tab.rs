@@ -312,7 +312,7 @@ impl StudioApp {
                     {
                         // Switch to render tab or trigger render
                         self.visualizer.enabled = true;
-                        self.tab = super::Tab::Render;
+                        self.tab = super::Tab::Quick;
                     }
                 });
             });

@@ -20,7 +20,7 @@ impl StudioApp {
     pub(super) fn quick_tab(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.page_title("Loopingers Render");
+                ui.page_title("Render Old");
                 ui.space2();
                 ui.text_colored(
                     "— Audio/Video Merger & Playlist Generator",
@@ -29,7 +29,7 @@ impl StudioApp {
                 );
             });
             ui.muted_label(
-                "Dashboard: masukan video/gambar dan lagu di sisi kiri, pantau pratinjau di sisi kanan, lalu tekan tombol render.",
+                "Masukkan video/gambar dan lagu di sisi kiri, pantau pratinjau di sisi kanan, lalu tekan tombol render.",
             );
         });
         ui.space_group();
@@ -121,7 +121,6 @@ impl StudioApp {
                     .clicked()
                 {
                     self.tracks.clear();
-                    self.timestamps_text.clear();
                     self.quick_selected_track = None;
                     self.info("Seluruh lagu di playlist dihapus.");
                 }

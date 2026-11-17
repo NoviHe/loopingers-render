@@ -1,19 +1,15 @@
 //! Hover explanations shown next to the ⓘ icons.
 
-pub const TAB_BACKGROUND: &str = "Langkah 1: pilih video atau gambar yang tampil di belakang lirik, serta rasio layar dan efek visualnya.";
+pub const TAB_BATCH_RENDER: &str = "Dari satu project (daftar lagu) ke banyak video dengan urutan lagu, durasi, visual & thumbnail berbeda.";
 pub const TAB_PLAYLIST: &str =
-    "Langkah 2: tambahkan lagu dan atur urutannya. Semua lagu digabung menjadi satu audio.";
-pub const TAB_LYRICS: &str = "Langkah 3: buat atau impor lirik, lalu atur gaya teks karaoke.";
-pub const TAB_RENDER: &str =
-    "Langkah 4: gabungkan background, audio, dan lirik menjadi satu video.";
-pub const TAB_THUMBNAIL: &str = "Buat gambar sampul YouTube dari background dan daftar lagu.";
+    "Kelola daftar lagu Generate: susun atau acak urutan, pratinjau audio, serta salin dan ekspor daftar lagu atau timestamp YouTube. Sinkron dengan Generate dan Batch Render.";
+pub const TAB_LYRICS: &str = "Studio LRC: ambil lagu dari Generate atau impor audio, buat lirik dengan Whisper, koreksi teks dan waktu, lalu simpan berkas LRC.";
+pub const TAB_THUMBNAIL: &str =
+    "Buat thumbnail mandiri dari gambar yang diunggah atau gunakan video Generate. Atur judul, sub judul, font, dan daftar lagu, lalu ekspor JPG Full HD.";
 pub const TAB_VISUALIZER: &str = "Buat visualizer musik reaktif audio (ala VIZ) dengan spektrum frekuensi, teks dinamis, logo, dan partikel.";
 pub const TAB_STORAGE: &str = "Lihat pemakaian disk dan bersihkan berkas yang tidak diperlukan.";
 
 pub mod background {
-    pub const HEADING: &str = "Pilih video pendek atau gambar sebagai latar. Video diulang otomatis sampai lagu terakhir selesai; gambar diubah menjadi klip bergerak.";
-    pub const PICK_VIDEO: &str = "Video pendek yang diulang sepanjang total durasi lagu. Video yang mulus saat diulang memberi hasil paling rapi.";
-    pub const PICK_IMAGE: &str = "Gambar diam diubah menjadi klip 10 detik yang bergerak (zoom atau geser), lalu diulang seperti video.";
     #[allow(dead_code)]
     pub const DEMO: &str = "Memuat video latar dan 2 lagu contoh berlirik supaya seluruh alur bisa dicoba tanpa menyiapkan file sendiri.";
     #[allow(dead_code)]
@@ -28,20 +24,8 @@ pub mod background {
     pub const APPLY_IMAGE: &str = "Membuat ulang klip dari gambar dengan rasio, efek, gerakan, dan denyut yang sedang dipilih.";
 }
 
-pub mod playlist {
-    pub const HEADING: &str = "Lagu digabung berurutan menjadi satu audio untuk satu video. Panjang total lagu menentukan berapa kali background diulang.";
-    pub const ADD: &str =
-        "Menambah satu atau beberapa berkas audio (mp3, wav, m4a, flac, dan lainnya).";
-    pub const TIMESTAMPS: &str = "Membuat daftar waktu mulai tiap lagu berformat YouTube (00:00 Judul) untuk ditempel di deskripsi video agar penonton bisa melompat ke lagu.";
-    pub const ROWS: &str = "Judul dan artis dipakai di banner video, thumbnail, dan timestamp; ubah langsung di kolomnya. Naik/Turun mengubah urutan putar.";
-    pub const SUMMARY: &str = "Total durasi menentukan panjang video akhir. Background diulang sebanyak yang dibutuhkan untuk menutupinya.";
-    pub const TIMESTAMP_BOX: &str =
-        "Salin teks ini ke deskripsi YouTube. Penonton bisa mengklik waktu untuk lompat ke lagu.";
-}
-
 pub mod lyrics {
-    pub const HEADING: &str = "Lirik dibuat otomatis oleh Whisper AI atau diimpor dari file LRC, lalu dibakar ke video dengan efek sapuan kata demi kata.";
-    pub const TRACK: &str = "Lirik diatur per lagu. Pilih lagu yang ingin diberi lirik.";
+    pub const HEADING: &str = "Buat dan edit berkas LRC dari audio atau lagu Generate: transkripsi Whisper, impor teks, sinkronisasi waktu, dan ekspor LRC.";
     pub const WHISPER: &str = "Whisper adalah AI pengenal suara yang mendengarkan lagu dan membuat lirik berstempel waktu per kata. Berjalan di komputer sendiri.";
     #[cfg(any(feature = "cuda", feature = "vulkan"))]
     pub const MODEL: &str = "Model lebih besar lebih akurat tetapi lebih lambat dan lebih besar untuk diunduh: tiny sekitar 75 MB, base 142 MB, small 466 MB, medium 1.5 GB.";
@@ -49,12 +33,6 @@ pub mod lyrics {
     pub const MODEL: &str = "Model lebih besar lebih akurat tetapi lebih lambat dan lebih besar untuk diunduh: tiny sekitar 75 MB, base 142 MB, small 466 MB.";
     pub const LANGUAGE: &str = "Bahasa lirik. Memilih bahasa yang benar membuat hasil lebih akurat; \"Deteksi otomatis\" membiarkan Whisper menebak.";
     pub const GPU: &str = "Mempercepat Whisper dengan GPU. Hanya aktif bila build ini mendukungnya (--features cuda atau vulkan); jika tidak, Whisper berjalan di CPU.";
-    pub const GENERATE_ONE: &str = "Membuat lirik hanya untuk lagu yang dipilih di atas.";
-    pub const GENERATE_ALL: &str =
-        "Membuat lirik untuk semua lagu satu per satu; hanya satu model berjalan pada satu waktu.";
-    pub const LRC: &str = "Dipakai bila sudah punya lirik berformat [mm:ss.xx] teks. Lebih presisi daripada tebakan AI dan melewati Whisper.";
-    pub const LINES: &str =
-        "Baris lirik beserta waktu mulainya. Hapus baris yang salah dengan tombol x.";
     pub const STYLE: &str =
         "Mengatur tampilan teks karaoke di video: tema warna, ukuran, posisi, dan efek sapuan.";
     pub const THEME: &str =
@@ -73,33 +51,20 @@ pub mod lyrics {
         "Menampilkan judul dan nama penyanyi sebagai banner singkat di awal setiap lagu.";
 }
 
-pub mod render {
-    pub const HEADING: &str = "Menggabungkan background, audio, dan lirik menjadi satu video. Ini langkah paling lama; encoder GPU jauh lebih cepat daripada CPU.";
-    pub const RESOLUTION: &str = "Ukuran video akhir. Lebih tinggi lebih tajam tetapi render lebih lama dan berkas lebih besar. 1080p cocok untuk YouTube.";
-    pub const FPS: &str = "Frame per detik. 30 FPS cukup untuk karaoke dan lebih cepat dirender; 60 FPS membuat gerak efek lebih mulus tetapi lebih lama.";
-    pub const ENCODER: &str = "Program yang menyimpan video. NVENC (NVIDIA) dan AMF (AMD) memakai GPU dan jauh lebih cepat; CPU x264 jalan di semua PC. HEVC menghasilkan berkas lebih kecil, H.264 paling kompatibel. Hanya encoder yang terbukti berfungsi yang bisa dipilih.";
-    pub const AUTO_ENCODER: &str =
-        "Memilih encoder H.264 GPU yang tersedia (NVIDIA lalu AMD), atau CPU x264 bila tidak ada.";
-    pub const PRESET: &str = "Keseimbangan kecepatan dan efisiensi kompresi, bergantung pada encoder. Nilai awal sudah dipilih otomatis untuk encoder yang dipakai.";
-    pub const QUALITY: &str = "Nilai CQ/CRF: makin kecil makin tajam tetapi berkas makin besar. Sekitar 18–23 umumnya sudah sangat bagus.";
-    pub const START: &str = "Memulai render. Membutuhkan background dan minimal satu lagu.";
-}
-
 pub mod thumbnail {
-    pub const HEADING: &str = "Membuat gambar sampul YouTube dari satu frame background, judul besar, dan daftar judul lagu di playlist.";
+    pub const HEADING: &str = "Unggah gambar sendiri untuk membuat thumbnail mandiri, atau ambil frame video Generate. Tambahkan judul dan daftar lagu, lalu ekspor JPG 1920x1080.";
     pub const TITLE: &str = "Teks besar utama pada thumbnail.";
     pub const SUBTITLE: &str = "Teks kecil di bawah judul, biasanya nama penyanyi atau kanal.";
     pub const FRAME: &str = "Detik pada video background yang diambil sebagai latar thumbnail. Pilih momen paling menarik.";
     pub const COLUMNS: &str =
         "Daftar lagu dibagi menjadi satu atau dua kolom. Otomatis memilih berdasarkan jumlah lagu.";
-    pub const NUMBERING: &str = "Cermin: kolom kanan memakai format \"Judul .01\". Berurutan: nomor lanjut dari kolom kiri, misalnya \"11. Judul\".";
+    pub const NUMBERING: &str = "Cermin: kolom kanan memakai Judul .01 dan mengulang nomor dari 01. Berurutan: nomor melanjutkan kolom kiri, misalnya 11. Judul. Cermin Berurutan: nomor tetap berlanjut, dengan format Judul .11.";
     pub const TITLE_SIZE: &str = "Ukuran huruf judul utama.";
     pub const TRACK_SIZE: &str = "Ukuran huruf daftar lagu. Kecilkan bila daftar terlalu panjang.";
     pub const VIGNETTE: &str =
         "Menggelapkan tepi gambar supaya teks lebih terbaca. 0 berarti tanpa gelap.";
     pub const COLORS: &str =
         "Warna judul utama, daftar lagu, dan sub judul, berurutan dari kiri ke kanan.";
-    pub const GENERATE: &str = "Membuat thumbnail dari background yang dipilih di langkah 1 dan menyimpannya di folder hasil.";
 }
 
 pub mod visualizer {

@@ -1,8 +1,11 @@
 mod background;
+mod batch_render_tab;
+mod dashboard_tab;
 mod generate_tab;
 mod help;
 mod lyrics;
 mod playlist;
+mod playlist_tools_tab;
 mod quick_tab;
 mod render_tab;
 mod storage_tab;
@@ -27,10 +30,10 @@ use loopkaraoke::{
     karaoke::{
         ass::{PlaylistDisplayMode, StyleConfig, TracklistPosition},
         styles::{Theme, THEMES},
-        transcribe::{ModelSize, Transcriber},
+        transcribe::Transcriber,
         LyricLine,
     },
-    media::{AudioInfo, VideoInfo},
+    media::{AudioInfo, VideoInfo, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS},
     render::{
         encoder::{Encoder, VideoRenderSettings},
         image_video::Motion,
@@ -58,48 +61,52 @@ const FALLBACK_FONTS: [&str; 7] = [
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Tab {
+    Dashboard,
     Quick,
     Generate,
-    Background,
+    BatchRender,
     Playlist,
     Lyrics,
     Karaoke,
     Visualizer,
-    Render,
     Thumbnail,
     Storage,
 }
 
 impl Tab {
+    fn uses_generate_media(self) -> bool {
+        matches!(self, Self::Generate | Self::Playlist)
+    }
+
     const ALL: [Self; 10] = [
-        Self::Quick,
+        Self::Dashboard,
         Self::Generate,
-        Self::Background,
+        Self::BatchRender,
         Self::Playlist,
+        Self::Thumbnail,
         Self::Lyrics,
         Self::Karaoke,
         Self::Visualizer,
-        Self::Render,
-        Self::Thumbnail,
+        Self::Quick,
         Self::Storage,
     ];
 
     fn help(self) -> &'static str {
         match self {
+            Self::Dashboard => "Dashboard: mulai membuat video full album dan lihat ringkasan project Generate.",
             Self::Quick => {
-                "Dashboard: alur kerja terpadu input video/gambar, audio, lirik, dan render cepat."
+                "Render Old: alur kerja terpadu input video/gambar, audio, lirik, dan render cepat."
             }
             Self::Generate => {
                 "Generate: gabungkan video pendekmu dengan daftar lagu mu menjadi satu file video."
             }
-            Self::Background => help::TAB_BACKGROUND,
+            Self::BatchRender => help::TAB_BATCH_RENDER,
             Self::Playlist => help::TAB_PLAYLIST,
             Self::Lyrics => help::TAB_LYRICS,
             Self::Karaoke => {
                 "Pengaturan gaya teks karaoke (font, warna, posisi, dan efek wipe) untuk lagu yang memiliki lirik LRC."
             }
             Self::Visualizer => help::TAB_VISUALIZER,
-            Self::Render => help::TAB_RENDER,
             Self::Thumbnail => help::TAB_THUMBNAIL,
             Self::Storage => help::TAB_STORAGE,
         }
@@ -108,34 +115,31 @@ impl Tab {
     /// The next step of the main workflow, if this tab is part of it.
     fn next(self) -> Option<Self> {
         match self {
-            Self::Quick | Self::Generate | Self::Lyrics | Self::Karaoke => None,
-            Self::Background => Some(Self::Playlist),
-            Self::Playlist => Some(Self::Visualizer),
-            Self::Visualizer => Some(Self::Render),
+            Self::Quick | Self::Generate | Self::BatchRender | Self::Lyrics | Self::Karaoke => None,
+            Self::Playlist => None,
+            Self::Visualizer => Some(Self::Quick),
             _ => None,
         }
     }
 
     fn previous(self) -> Option<Self> {
         match self {
-            Self::Background => Some(Self::Quick),
-            Self::Playlist => Some(Self::Background),
-            Self::Visualizer => Some(Self::Playlist),
-            Self::Render => Some(Self::Visualizer),
+            Self::Playlist => None,
+            Self::Visualizer => Some(Self::Quick),
             _ => None,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Quick => "Dashboard",
+            Self::Dashboard => "Dashboard",
+            Self::Quick => "Render Old",
             Self::Generate => "Generate",
-            Self::Background => "Background",
+            Self::BatchRender => "Batch Render",
             Self::Playlist => "Playlist",
             Self::Lyrics => "Lirik",
             Self::Karaoke => "Karaoke",
             Self::Visualizer => "Visualizer",
-            Self::Render => "Render",
             Self::Thumbnail => "Thumbnail",
             Self::Storage => "Settings",
         }
@@ -143,14 +147,14 @@ impl Tab {
 
     fn icon(self) -> theme::SidebarIcon {
         match self {
-            Self::Quick => theme::SidebarIcon::Dashboard,
+            Self::Dashboard => theme::SidebarIcon::Dashboard,
+            Self::Quick => theme::SidebarIcon::RenderOld,
             Self::Generate => theme::SidebarIcon::Generate,
-            Self::Background => theme::SidebarIcon::Background,
+            Self::BatchRender => theme::SidebarIcon::BatchRender,
             Self::Playlist => theme::SidebarIcon::Playlist,
             Self::Lyrics => theme::SidebarIcon::Lyrics,
             Self::Karaoke => theme::SidebarIcon::Karaoke,
             Self::Visualizer => theme::SidebarIcon::Visualizer,
-            Self::Render => theme::SidebarIcon::Render,
             Self::Thumbnail => theme::SidebarIcon::Thumbnail,
             Self::Storage => theme::SidebarIcon::Settings,
         }
@@ -163,10 +167,6 @@ enum Event {
     Hardware(HardwareInfo),
     Background(Result<Background>),
     Audios(Vec<Result<AudioInfo>>),
-    Lyrics {
-        track: u32,
-        result: Result<Vec<LyricLine>>,
-    },
     StandaloneAudios(Vec<(Result<AudioInfo>, Option<PathBuf>)>),
     StandaloneLyrics {
         track_id: u32,
@@ -174,7 +174,10 @@ enum Event {
     },
     Demo(Result<DemoSet>),
     Thumbnail(Result<PathBuf>),
-    ThumbnailFrame(Result<PathBuf>),
+    ThumbnailFrame {
+        source: PathBuf,
+        result: Result<PathBuf>,
+    },
     GenerateVideo(Result<VideoInfo>),
     GenerateAudios(Vec<Result<AudioInfo>>),
     GeneratePreview {
@@ -230,28 +233,24 @@ impl Notice {
 }
 
 struct Track {
-    id: u32,
     path: PathBuf,
     title: String,
     artist: String,
     duration: f64,
     lyrics: Vec<LyricLine>,
     has_lrc: bool,
-    transcribing: bool,
 }
 
 impl Track {
-    fn from_info(id: u32, info: AudioInfo, lyrics: Vec<LyricLine>, has_lrc: bool) -> Self {
+    fn from_info(info: AudioInfo, lyrics: Vec<LyricLine>, has_lrc: bool) -> Self {
         let has_lrc = has_lrc || !lyrics.is_empty();
         Self {
-            id,
             path: PathBuf::from(info.path),
             title: info.title,
             artist: info.artist,
             duration: info.duration,
             lyrics,
             has_lrc,
-            transcribing: false,
         }
     }
 }
@@ -355,14 +354,7 @@ pub struct StudioApp {
     visual_effect: usize,
 
     tracks: Vec<Track>,
-    next_track_id: u32,
-    timestamps_text: String,
 
-    selected_track: usize,
-    lrc_text: String,
-    whisper_model: ModelSize,
-    language: usize,
-    use_gpu: bool,
     theme: usize,
     style: StyleState,
 
@@ -375,12 +367,6 @@ pub struct StudioApp {
 
     pub custom_filename: String,
     pub quick_selected_track: Option<usize>,
-    pub show_tab_background: bool,
-    pub show_tab_playlist: bool,
-    pub show_tab_lyrics: bool,
-    pub show_tab_render: bool,
-    pub show_tab_thumbnail: bool,
-    pub show_tab_visualizer: bool,
     pub auto_generate_thumbnail: bool,
     pub(super) playlist_mode: PlaylistDisplayMode,
     pub(super) show_tracklist_visual: bool,
@@ -390,6 +376,7 @@ pub struct StudioApp {
     pub(super) tracklist_font_size: u32,
     pub(super) tracklist_title: String,
     pub(super) generate: generate_tab::GenerateState,
+    pub(super) batch_render: batch_render_tab::BatchRenderState,
     pub(super) thumbnail: thumbnail_tab::ThumbnailState,
     pub(super) visualizer: loopkaraoke::visualizer::VisualizerSpec,
     pub(super) visualizer_playing: bool,
@@ -448,7 +435,7 @@ impl StudioApp {
             ffmpeg_ready: false,
             ffmpeg_error: None,
             ffmpeg_download: Arc::new(DownloadProgress::default()),
-            tab: Tab::Quick,
+            tab: Tab::Dashboard,
             background: None,
             video_preview: None,
             show_bg_settings: false,
@@ -458,13 +445,6 @@ impl StudioApp {
             beat_pulse: false,
             visual_effect: 0,
             tracks: Vec::new(),
-            next_track_id: 1,
-            timestamps_text: String::new(),
-            selected_track: 0,
-            lrc_text: String::new(),
-            whisper_model: ModelSize::Base,
-            language: 0,
-            use_gpu: true,
             theme: 0,
             style: StyleState::from_theme(&THEMES[0].1),
             resolution,
@@ -475,12 +455,6 @@ impl StudioApp {
             job: None,
             custom_filename: String::new(),
             quick_selected_track: None,
-            show_tab_background: settings.show_tab_background,
-            show_tab_playlist: settings.show_tab_playlist,
-            show_tab_lyrics: settings.show_tab_lyrics,
-            show_tab_visualizer: settings.show_tab_visualizer,
-            show_tab_render: settings.show_tab_render,
-            show_tab_thumbnail: settings.show_tab_thumbnail,
             auto_generate_thumbnail: settings.auto_generate_thumbnail,
             playlist_mode: PlaylistDisplayMode::Both,
             show_tracklist_visual: true,
@@ -490,6 +464,7 @@ impl StudioApp {
             tracklist_font_size: 26,
             tracklist_title: "DAFTAR LAGU".to_owned(),
             generate: generate_tab::GenerateState::from_settings(&settings.generate),
+            batch_render: batch_render_tab::BatchRenderState::default(),
             thumbnail: thumbnail_tab::ThumbnailState::default(),
             visualizer: loopkaraoke::visualizer::VisualizerSpec::default(),
             visualizer_playing: false,
@@ -523,12 +498,6 @@ impl StudioApp {
         let settings = AppSettings {
             dark_mode: self.dark_mode,
             video: self.video_settings,
-            show_tab_background: self.show_tab_background,
-            show_tab_playlist: self.show_tab_playlist,
-            show_tab_lyrics: self.show_tab_lyrics,
-            show_tab_visualizer: self.show_tab_visualizer,
-            show_tab_render: self.show_tab_render,
-            show_tab_thumbnail: self.show_tab_thumbnail,
             resolution: self.resolution.to_owned(),
             fps: self.fps,
             auto_generate_thumbnail: self.auto_generate_thumbnail,
@@ -551,20 +520,6 @@ impl StudioApp {
         self.tracks
             .iter()
             .any(|t| t.has_lrc || !t.lyrics.is_empty())
-    }
-
-    pub(super) fn tab_visible(&self, tab: Tab) -> bool {
-        match tab {
-            Tab::Quick | Tab::Generate => true,
-            Tab::Storage => true,
-            Tab::Background => self.show_tab_background,
-            Tab::Playlist => self.show_tab_playlist,
-            Tab::Lyrics => self.show_tab_lyrics,
-            Tab::Karaoke => true,
-            Tab::Visualizer => self.show_tab_visualizer,
-            Tab::Render => self.show_tab_render,
-            Tab::Thumbnail => self.show_tab_thumbnail,
-        }
     }
 
     fn start_up(&mut self) {
@@ -667,7 +622,6 @@ impl StudioApp {
                 self.error(format!("FFmpeg gagal dimuat: {error}"));
             }
             Event::Hardware(hardware) => {
-                self.use_gpu = hardware.gpu_whisper;
                 self.hardware = Some(hardware.clone());
                 self.sync_encoder_with_video_settings();
                 let info_msg = if hardware.has_gpu() {
@@ -771,23 +725,6 @@ impl StudioApp {
                     self.warn(format!("Sebagian lagu gagal dimuat: {}", failed.join("; ")));
                 }
             }
-            Event::Lyrics { track, result } => {
-                let Some(entry) = self.tracks.iter_mut().find(|entry| entry.id == track) else {
-                    return;
-                };
-                entry.transcribing = false;
-                let title = entry.title.clone();
-                match result {
-                    Ok(lyrics) => {
-                        let count = lyrics.len();
-                        entry.lyrics = lyrics;
-                        let msg =
-                            format!("Berhasil mendeteksi {count} baris lirik untuk \"{title}\"");
-                        self.notify_success(&msg, msg.clone());
-                    }
-                    Err(error) => self.error(format!("Transkripsi \"{title}\" gagal: {error}")),
-                }
-            }
             Event::StandaloneAudios(items) => {
                 self.lrc_studio.loading_audio = false;
                 let mut added = 0;
@@ -869,11 +806,12 @@ impl StudioApp {
                     Err(error) => self.error(format!("Thumbnail gagal: {error}")),
                 }
             }
-            Event::ThumbnailFrame(result) => {
+            Event::ThumbnailFrame { source, result } => {
                 self.thumbnail.extracting_frame = false;
                 match result {
                     Ok(path) => {
                         self.thumbnail.preview_frame = Some(path);
+                        self.thumbnail.preview_source = Some(source);
                         self.log(
                             LogLevel::Info,
                             "Frame background thumbnail berhasil diambil.",
@@ -956,10 +894,7 @@ impl StudioApp {
     }
 
     fn add_track_with_lrc(&mut self, info: AudioInfo, lyrics: Vec<LyricLine>, has_lrc: bool) {
-        let id = self.next_track_id;
-        self.next_track_id += 1;
-        self.tracks
-            .push(Track::from_info(id, info, lyrics, has_lrc));
+        self.tracks.push(Track::from_info(info, lyrics, has_lrc));
     }
 
     fn total_duration(&self) -> f64 {
@@ -970,19 +905,12 @@ impl StudioApp {
     fn step_done(&self, tab: Tab) -> bool {
         match tab {
             Tab::Quick => self.background.is_some() && !self.tracks.is_empty(),
-            Tab::Generate => false,
-            Tab::Background => self.background.is_some(),
-            Tab::Playlist => !self.tracks.is_empty(),
-            Tab::Lyrics => {
-                !self.tracks.is_empty() && self.tracks.iter().all(|track| !track.lyrics.is_empty())
-            }
+            Tab::Dashboard | Tab::Generate | Tab::BatchRender => false,
+            Tab::Playlist => false,
+            Tab::Lyrics => false,
             Tab::Karaoke => self.show_karaoke_lyrics && self.has_any_track_lyrics(),
             Tab::Visualizer => self.visualizer.enabled,
-            Tab::Render => self
-                .job
-                .as_ref()
-                .is_some_and(|job| matches!(job.snapshot().status, JobStatus::Completed)),
-            Tab::Thumbnail => self.thumbnail.result.is_some(),
+            Tab::Thumbnail => false,
             Tab::Storage => false,
         }
     }
@@ -992,7 +920,50 @@ impl StudioApp {
         if !self.ffmpeg_ready {
             return;
         }
-        let on_generate = self.tab == Tab::Generate;
+        if self.tab == Tab::Thumbnail {
+            for path in files.into_iter().filter_map(|file| file.path) {
+                let extension = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if IMAGE_EXTENSIONS.contains(&extension.as_str()) {
+                    self.set_thumbnail_image(path);
+                } else {
+                    self.warn("Thumbnail menerima gambar JPG, PNG, WebP, atau JFIF. Pilih video melalui Generate.");
+                }
+            }
+            return;
+        }
+        if self.tab == Tab::Lyrics {
+            let mut audios = Vec::new();
+            for path in files.into_iter().filter_map(|file| file.path) {
+                if path.is_dir() {
+                    collect_audios_in_folder(&path, &mut audios);
+                    continue;
+                }
+                let extension = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if playlist::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+                    audios.push(path);
+                } else if matches!(extension.as_str(), "lrc" | "txt") {
+                    self.load_standalone_lrc_path(path);
+                } else {
+                    self.warn(format!(
+                        "Format file tidak didukung di Studio Lirik: {}",
+                        path.display()
+                    ));
+                }
+            }
+            if !audios.is_empty() {
+                self.load_standalone_audios(audios);
+            }
+            return;
+        }
+        let on_generate = self.tab.uses_generate_media();
         let mut audios = Vec::new();
         for path in files.into_iter().filter_map(|file| file.path) {
             if path.is_dir() {
@@ -1009,16 +980,16 @@ impl StudioApp {
                 .map(str::to_ascii_lowercase)
                 .unwrap_or_default();
             let is = |list: &[&str]| list.contains(&extension.as_str());
-            if is(&background::VIDEO_EXTENSIONS) {
+            if is(&VIDEO_EXTENSIONS) {
                 if on_generate {
                     self.load_generate_video(path);
                 } else {
                     if self.tab != Tab::Quick {
-                        self.tab = Tab::Background;
+                        self.tab = Tab::Quick;
                     }
                     self.load_video(path);
                 }
-            } else if is(&background::IMAGE_EXTENSIONS) {
+            } else if is(&IMAGE_EXTENSIONS) {
                 if on_generate {
                     let name = path
                         .file_name()
@@ -1028,37 +999,12 @@ impl StudioApp {
                     self.info(format!("Thumbnail Generate dipilih: {name}"));
                 } else {
                     if self.tab != Tab::Quick {
-                        self.tab = Tab::Background;
+                        self.tab = Tab::Quick;
                     }
                     self.load_image(path);
                 }
             } else if is(&playlist::AUDIO_EXTENSIONS) {
                 audios.push(path);
-            } else if !on_generate && is(&["lrc", "txt"]) && !self.tracks.is_empty() {
-                let lrc_stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default();
-                let matched_idx = self.tracks.iter().position(|t| {
-                    t.path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|s| s.eq_ignore_ascii_case(lrc_stem))
-                });
-                match std::fs::read_to_string(&path) {
-                    Ok(text) => {
-                        if let Some(idx) = matched_idx {
-                            let parsed = loopkaraoke::karaoke::lrc::parse_lrc(&text);
-                            self.tracks[idx].lyrics = parsed;
-                            self.tracks[idx].has_lrc = true;
-                            let title = self.tracks[idx].title.clone();
-                            self.info(format!("File LRC dihubungkan ke lagu \"{title}\"."));
-                        } else {
-                            self.apply_lrc(&text);
-                        }
-                    }
-                    Err(error) => self.error(format!("File lirik tidak terbaca: {error}")),
-                }
             } else if !is(&["lrc", "txt"]) {
                 self.warn(format!("Format file tidak didukung: {}", path.display()));
             }
@@ -1068,7 +1014,7 @@ impl StudioApp {
                 self.load_generate_audios(audios);
             } else {
                 if self.tab != Tab::Quick {
-                    self.tab = Tab::Playlist;
+                    self.tab = Tab::Quick;
                 }
                 self.load_audios(audios);
             }
@@ -1089,8 +1035,8 @@ impl StudioApp {
                     "mp4", "mov", "mkv", "webm", "avi", "jpg", "jpeg", "png", "webp", "jfif",
                 ],
             )
-            .add_filter("Video", &background::VIDEO_EXTENSIONS)
-            .add_filter("Gambar", &background::IMAGE_EXTENSIONS)
+            .add_filter("Video", &VIDEO_EXTENSIONS)
+            .add_filter("Gambar", &IMAGE_EXTENSIONS)
             .pick_file();
         if let Some(path) = picked {
             self.load_media_dynamic(path);
@@ -1103,9 +1049,9 @@ impl StudioApp {
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
             .unwrap_or_default();
-        if background::VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+        if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
             self.load_video(path);
-        } else if background::IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
             self.load_image(path);
         } else {
             self.warn(format!("Format berkas tidak didukung: {}", path.display()));
@@ -1156,8 +1102,6 @@ impl StudioApp {
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
         self.tracks.shuffle(&mut rng);
-        self.selected_track = 0;
-        self.timestamps_text.clear();
         self.quick_selected_track = None;
         self.log(
             LogLevel::Success,
@@ -1299,7 +1243,6 @@ impl eframe::App for StudioApp {
         } else {
             let max_label_width = Tab::ALL
                 .into_iter()
-                .filter(|&tab| self.tab_visible(tab))
                 .map(|tab| {
                     ctx.fonts(|fonts| {
                         fonts
@@ -1379,9 +1322,6 @@ impl eframe::App for StudioApp {
 
                         ui.spacing_mut().item_spacing.y = 4.0;
                         for tab in Tab::ALL {
-                            if !self.tab_visible(tab) {
-                                continue;
-                            }
                             if theme::sidebar_tab(
                                 ui,
                                 tab.icon(),
@@ -1398,30 +1338,24 @@ impl eframe::App for StudioApp {
             });
 
         let content_rect = egui::CentralPanel::default()
-            .frame(theme::panel_frame(
-                ctx,
-                if self.tab == Tab::Generate { 12 } else { 16 },
-            ))
+            .frame(theme::panel_frame(ctx, 16))
             .show(ctx, |ui| {
                 let panel_rect = ui.max_rect();
                 if !self.ffmpeg_ready {
                     self.ffmpeg_setup_panel(ui);
                     return panel_rect;
                 }
-                if !self.tab_visible(self.tab) {
-                    self.tab = Tab::Quick;
-                }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.tab {
+                        Tab::Dashboard => self.dashboard_tab(ui),
                         Tab::Quick => self.quick_tab(ui),
                         Tab::Generate => self.generate_tab(ui),
-                        Tab::Background => self.background_tab(ui),
-                        Tab::Playlist => self.playlist_tab(ui),
+                        Tab::BatchRender => self.batch_render_tab(ui),
+                        Tab::Playlist => self.playlist_tools_tab(ui),
                         Tab::Lyrics => self.lyrics_tab(ui),
                         Tab::Karaoke => self.karaoke_tab(ui),
                         Tab::Visualizer => self.visualizer_tab(ui),
-                        Tab::Render => self.render_tab(ui),
                         Tab::Thumbnail => self.thumbnail_tab(ui),
                         Tab::Storage => self.storage_tab(ui),
                     });
@@ -1524,6 +1458,9 @@ impl StudioApp {
                 ui.metadata_label(self.hardware_status_text());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.show_logs {
+                    ui.metadata_label(self.hardware_status_text());
+                }
                 self.footer_actions(ui);
             });
         });
@@ -1704,9 +1641,6 @@ impl StudioApp {
             {
                 self.log_height = 160.0;
             }
-            ui.space2();
-            ui.metadata_label(format!("• {}", self.hardware_status_text()));
-
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(StyledButton::ghost("Sembunyikan").small()).clicked() {
                     self.show_logs = false;
@@ -1791,7 +1725,7 @@ impl StudioApp {
     }
 
     fn footer_actions(&mut self, ui: &mut egui::Ui) {
-        if self.tab == Tab::Render || self.tab == Tab::Quick {
+        if self.tab == Tab::Quick {
             let blocker = self.render_blocker();
             let running = self.job_running();
             if ui
@@ -1937,6 +1871,15 @@ pub fn load_font_definitions(extra_fonts: &[(&str, Vec<u8>)]) -> egui::FontDefin
             "emoji-icon-font".to_owned(),
         ],
     );
+    // A font-data name must also be bound as a family before a preview can use it.
+    for alias in ["inter", "inter-medium", "inter-semibold", "jetbrains-mono"] {
+        let mut stack = fonts.families[&egui::FontFamily::Proportional].clone();
+        stack.retain(|name| name != alias);
+        stack.insert(0, alias.to_owned());
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(alias.into()), stack);
+    }
 
     let windows_root =
         std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
@@ -1965,20 +1908,17 @@ pub fn load_font_definitions(extra_fonts: &[(&str, Vec<u8>)]) -> egui::FontDefin
         ("ariali", "ariali.ttf"),
     ];
     for (alias, filename) in thumbnail_system_fonts {
+        let mut stack = fonts.families[&egui::FontFamily::Name("inter-semibold".into())].clone();
         if let Ok(bytes) = std::fs::read(font_dir.join(filename)) {
             fonts.font_data.insert(
                 alias.to_owned(),
                 Arc::new(egui::FontData::from_owned(bytes)),
             );
-            fonts.families.insert(
-                egui::FontFamily::Name(alias.into()),
-                vec![
-                    alias.to_owned(),
-                    "inter-semibold".to_owned(),
-                    "inter".to_owned(),
-                ],
-            );
+            stack.insert(0, alias.to_owned());
         }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(alias.into()), stack);
     }
 
     for (custom_name, custom_bytes) in extra_fonts {
@@ -2013,6 +1953,57 @@ pub fn register_custom_fonts(ctx: &egui::Context, extra_fonts: &[(&str, Vec<u8>)
 mod tests {
     use super::*;
     use ab_glyph::{Font, FontArc, ScaleFont};
+
+    #[test]
+    fn thumbnail_font_presets_can_be_rendered_before_and_after_font_reload() {
+        let ctx = egui::Context::default();
+        let custom = [(
+            "track_custom",
+            include_bytes!("../../assets/fonts/Inter-Regular.ttf").to_vec(),
+        )];
+        for extras in [&[][..], &custom[..], &[][..]] {
+            ctx.set_fonts(load_font_definitions(extras));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    for choice in thumbnail_tab::TITLE_FONTS
+                        .iter()
+                        .chain(thumbnail_tab::SUBTITLE_FONTS.iter())
+                    {
+                        ui.label(
+                            egui::RichText::new("Lorem Ipsum")
+                                .family(egui::FontFamily::Name(choice.id.into())),
+                        );
+                    }
+                    if !extras.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Custom Font")
+                                .family(egui::FontFamily::Name("track_custom".into())),
+                        );
+                    }
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn playlist_imports_use_generate_media_without_changing_legacy_routes() {
+        assert!(Tab::Playlist.uses_generate_media());
+        assert!(Tab::Generate.uses_generate_media());
+        for tab in [Tab::Quick, Tab::BatchRender] {
+            assert!(!tab.uses_generate_media());
+        }
+        assert!(Tab::Playlist.next().is_none());
+        assert!(Tab::Playlist.previous().is_none());
+        assert!(Tab::Visualizer.previous() == Some(Tab::Quick));
+    }
+
+    #[test]
+    fn removed_background_and_render_pages_are_absent_from_sidebar_navigation() {
+        assert!(Tab::ALL
+            .iter()
+            .all(|tab| !matches!(tab.label(), "Background" | "Render")));
+        assert!(Tab::Visualizer.next() == Some(Tab::Quick));
+    }
 
     #[test]
     fn all_ui_symbols_have_outline_glyphs() {
