@@ -18,7 +18,38 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        env:
+          VULKAN_VERSION: '1.4.363.0'
+          VULKAN_SHA256: '94a82d378f7a5e3e54c9db7d2fb7016af136e14ac0a18dbf0f2f67a36352d141'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "VulkanSDK\$env:VULKAN_VERSION"
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk-installer.exe'
+          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $actualHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+          if ($actualHash -ne $env:VULKAN_SHA256) {
+            throw "Vulkan SDK checksum mismatch: $actualHash"
+          }
+          $install = Start-Process -FilePath $installer -ArgumentList @(
+            '--root', "`"$sdkRoot`"", '--accept-licenses', '--default-answer',
+            '--confirm-command', 'install', 'copy_only=1'
+          ) -Wait -PassThru -WindowStyle Hidden
+          if ($install.ExitCode -ne 0) {
+            throw "Vulkan SDK installation failed with exit code $($install.ExitCode)"
+          }
+          foreach ($file in @('Include\vulkan\vulkan.h', 'Lib\vulkan-1.lib', 'Bin\glslc.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot $file))) {
+              throw "Vulkan SDK installation is incomplete: $file"
+            }
+          }
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_SDK_PATH=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $sdkRoot 'Bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2

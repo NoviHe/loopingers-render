@@ -35,8 +35,6 @@ pub mod lyrics {
     pub const GPU: &str = "Mempercepat Whisper dengan GPU. Hanya aktif bila build ini mendukungnya (--features cuda atau vulkan); jika tidak, Whisper berjalan di CPU.";
     pub const STYLE: &str =
         "Mengatur tampilan teks karaoke di video: tema warna, ukuran, posisi, dan efek sapuan.";
-    pub const THEME: &str =
-        "Preset warna siap pakai. Memilih tema mengisi warna di bawahnya, yang masih bisa diubah.";
     pub const COLORS: &str = "Normal: warna kata sebelum dinyanyikan. Saat bernyanyi: warna yang menyapu kata ketika dinyanyikan. Garis tepi dan bayangan menjaga teks tetap terbaca di atas background terang.";
     pub const FONT_CHOICE: &str =
         "Pilih jenis font lirik karaoke dari preset populer (Impact, Arial Black, Segoe UI, dll) atau unggah berkas font kustom (.ttf / .otf).";

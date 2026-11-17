@@ -1347,17 +1347,20 @@ impl eframe::App for StudioApp {
                 }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| match self.tab {
-                        Tab::Dashboard => self.dashboard_tab(ui),
-                        Tab::Quick => self.quick_tab(ui),
-                        Tab::Generate => self.generate_tab(ui),
-                        Tab::BatchRender => self.batch_render_tab(ui),
-                        Tab::Playlist => self.playlist_tools_tab(ui),
-                        Tab::Lyrics => self.lyrics_tab(ui),
-                        Tab::Karaoke => self.karaoke_tab(ui),
-                        Tab::Visualizer => self.visualizer_tab(ui),
-                        Tab::Thumbnail => self.thumbnail_tab(ui),
-                        Tab::Storage => self.storage_tab(ui),
+                    .show(ui, |ui| {
+                        theme::apply_control_style(ui);
+                        match self.tab {
+                            Tab::Dashboard => self.dashboard_tab(ui),
+                            Tab::Quick => self.quick_tab(ui),
+                            Tab::Generate => self.generate_tab(ui),
+                            Tab::BatchRender => self.batch_render_tab(ui),
+                            Tab::Playlist => self.playlist_tools_tab(ui),
+                            Tab::Lyrics => self.lyrics_tab(ui),
+                            Tab::Karaoke => self.karaoke_tab(ui),
+                            Tab::Visualizer => self.visualizer_tab(ui),
+                            Tab::Thumbnail => self.thumbnail_tab(ui),
+                            Tab::Storage => self.storage_tab(ui),
+                        }
                     });
                 panel_rect
             })
@@ -1454,13 +1457,8 @@ impl StudioApp {
             {
                 self.show_logs = !self.show_logs;
             }
-            if !self.show_logs {
-                ui.metadata_label(self.hardware_status_text());
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.show_logs {
-                    ui.metadata_label(self.hardware_status_text());
-                }
+                ui.metadata_label(self.hardware_status_text());
                 self.footer_actions(ui);
             });
         });

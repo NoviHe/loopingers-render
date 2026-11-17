@@ -916,21 +916,6 @@ impl StudioApp {
                         let mut combo_notice: Option<String> = None;
                         let mut reset_clicked = false;
                         ui.scope(|ui| {
-                            let s = ui.style_mut();
-                            s.spacing.interact_size.y = 30.0;
-                            let r = CornerRadius::same(8);
-                            for state in [
-                                &mut s.visuals.widgets.inactive,
-                                &mut s.visuals.widgets.hovered,
-                                &mut s.visuals.widgets.active,
-                                &mut s.visuals.widgets.open,
-                            ] {
-                                state.corner_radius = r;
-                            }
-                            s.visuals.widgets.inactive.bg_fill = p.bg;
-                            s.visuals.widgets.inactive.weak_bg_fill = p.bg;
-                            s.visuals.extreme_bg_color = p.bg;
-
                             // Row 1: Fade out, Cross-fade, Durasi loop manual
                             let mut fade_event = StepperChange::none();
                             let mut cf_event = StepperChange::none();
@@ -1819,7 +1804,7 @@ fn labeled_seconds_stepper(
         .inner_margin(egui::Margin::ZERO)
         .show(ui, |ui| {
             ui.set_width(ctrl_w);
-            ui.set_height(28.0);
+            ui.set_height(theme::metrics::CONTROL_HEIGHT - 2.0);
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if draw_stepper_button(ui, false, *value > 0.005, &p, true).clicked() {
@@ -1839,7 +1824,7 @@ fn labeled_seconds_stepper(
                 ui.add_space(8.0);
                 let resp = ui
                     .add_sized(
-                        [edit_w, 26.0],
+                        [edit_w, theme::metrics::INPUT_HEIGHT - 6.0],
                         egui::TextEdit::singleline(&mut buf)
                             .hint_text(egui::RichText::new("0").color(hint_color))
                             .vertical_align(Align::Center)
@@ -1952,7 +1937,7 @@ fn labeled_duration_field(
         .inner_margin(egui::Margin::ZERO)
         .show(ui, |ui| {
             ui.set_width(ctrl_w);
-            ui.set_height(28.0);
+            ui.set_height(theme::metrics::CONTROL_HEIGHT - 2.0);
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(10.0);
@@ -1961,11 +1946,13 @@ fn labeled_duration_field(
                     .vertical_align(Align::Center)
                     .frame(false)
                     .margin(egui::Margin::ZERO);
-                changed = ui.add_sized([edit_w, 26.0], edit).changed();
+                changed = ui
+                    .add_sized([edit_w, theme::metrics::INPUT_HEIGHT - 6.0], edit)
+                    .changed();
                 ui.add_space(8.0);
                 paint_vertical_divider(ui, p.border);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(badge_w, 28.0),
+                    egui::vec2(badge_w, theme::metrics::CONTROL_HEIGHT - 2.0),
                     Layout::centered_and_justified(egui::Direction::LeftToRight),
                     |ui| {
                         ui.label(
@@ -2402,7 +2389,7 @@ fn styled_outline_icon_button(
     );
     let text_galley = ui.fonts(|fonts| fonts.layout_no_wrap(label.to_owned(), font_id, p.text));
     let width = (14.0 + 14.0 + 8.0 + text_galley.size().x + 16.0).ceil();
-    let height = 30.0;
+    let height = theme::metrics::CONTROL_HEIGHT;
 
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);

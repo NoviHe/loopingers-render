@@ -638,23 +638,7 @@ fn folder_picker_row(
 }
 
 fn batch_text_field(ui: &mut egui::Ui, text: &mut String, hint: &str, width: f32) {
-    let p = theme::Palette::of(ui.ctx());
-    let width = width.min(ui.available_width());
-    egui::Frame::new()
-        .fill(p.bg)
-        .stroke(Stroke::new(1.0_f32, p.border))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(10, 2))
-        .show(ui, |ui| {
-            ui.add_sized(
-                [(width - 22.0).max(30.0), 28.0],
-                egui::TextEdit::singleline(text)
-                    .hint_text(egui::RichText::new(hint).color(p.text_muted))
-                    .vertical_align(Align::Center)
-                    .frame(false)
-                    .margin(egui::Margin::ZERO),
-            );
-        });
+    theme::text_field(ui, text, hint, theme::InputWidth::Fixed(width));
 }
 
 fn batch_count_stepper(ui: &mut egui::Ui, count: &mut String) {
@@ -669,7 +653,7 @@ fn batch_count_stepper(ui: &mut egui::Ui, count: &mut String) {
         .inner_margin(egui::Margin::ZERO)
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.set_height(28.0);
+            ui.set_height(theme::metrics::CONTROL_HEIGHT - 2.0);
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if draw_stepper_button(ui, false, value > 0, &p, true).clicked() {
@@ -697,7 +681,7 @@ fn batch_count_stepper(ui: &mut egui::Ui, count: &mut String) {
                 });
                 let edit_width = (width - 58.0 - suffix_width - 20.0).max(30.0);
                 ui.add_sized(
-                    [edit_width, 26.0],
+                    [edit_width, theme::metrics::INPUT_HEIGHT - 6.0],
                     egui::TextEdit::singleline(count)
                         .hint_text("0")
                         .vertical_align(Align::Center)
@@ -707,7 +691,7 @@ fn batch_count_stepper(ui: &mut egui::Ui, count: &mut String) {
                 .on_hover_text("Ketik jumlah video, atau klik − / +. Kosongkan untuk otomatis.");
                 ui.add_space(4.0);
                 ui.add_sized(
-                    [suffix_width + 8.0, 26.0],
+                    [suffix_width + 8.0, theme::metrics::INPUT_HEIGHT - 6.0],
                     egui::Label::new(
                         egui::RichText::new(suffix)
                             .size(theme::metrics::FONT_SM)

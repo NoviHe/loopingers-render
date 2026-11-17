@@ -984,14 +984,50 @@ impl StudioApp {
         ui.add_space(6.0);
 
         // Sliders: Size, Sensitivity, Rotation
-        theme::label_with_info(ui, "Ukuran (Scale):", help::SIZE);
-        ui.add(egui::Slider::new(&mut self.visualizer.size, 20.0..=100.0).text("%"));
+        ui.scope(|ui| {
+            theme::control_slider(
+                ui,
+                "Ukuran (Scale)",
+                &mut self.visualizer.size,
+                20.0..=100.0,
+                "%",
+                0,
+                None,
+                true,
+            );
+        })
+        .response
+        .on_hover_text(help::SIZE);
 
-        theme::label_with_info(ui, "Sensitivitas Audio (Gain):", help::SENSITIVITY);
-        ui.add(egui::Slider::new(&mut self.visualizer.sensitivity, 10.0..=100.0).text("%"));
+        ui.scope(|ui| {
+            theme::control_slider(
+                ui,
+                "Sensitivitas Audio (Gain)",
+                &mut self.visualizer.sensitivity,
+                10.0..=100.0,
+                "%",
+                0,
+                None,
+                true,
+            );
+        })
+        .response
+        .on_hover_text(help::SENSITIVITY);
 
-        theme::label_with_info(ui, "Rotasi:", help::ROTATION);
-        ui.add(egui::Slider::new(&mut self.visualizer.rotation_deg, 0.0..=360.0).text("°"));
+        ui.scope(|ui| {
+            theme::control_slider(
+                ui,
+                "Rotasi",
+                &mut self.visualizer.rotation_deg,
+                0.0..=360.0,
+                "\u{00b0}",
+                0,
+                None,
+                true,
+            );
+        })
+        .response
+        .on_hover_text(help::ROTATION);
         ui.add_space(8.0);
 
         // Colors
@@ -1035,10 +1071,11 @@ impl StudioApp {
 
             if self.visualizer.text_mode == TextSourceMode::Custom {
                 ui.label("Tulis Teks Kustom:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.visualizer.text_custom)
-                        .hint_text("Contoh: Nightcore Beats • YouTube Channel")
-                        .desired_width(f32::INFINITY),
+                theme::text_field(
+                    ui,
+                    &mut self.visualizer.text_custom,
+                    "Contoh: Nightcore Beats • YouTube Channel",
+                    theme::InputWidth::Fill,
                 );
             } else {
                 ui.colored_label(
@@ -1061,11 +1098,16 @@ impl StudioApp {
                 ui.checkbox(&mut self.visualizer.text_glow, "Efek Neon Glow");
             });
 
-            ui.label("Ukuran Huruf:");
-            ui.add(egui::Slider::new(
+            theme::control_slider(
+                ui,
+                "Ukuran Huruf",
                 &mut self.visualizer.text_size,
                 16.0..=120.0,
-            ));
+                " px",
+                0,
+                None,
+                true,
+            );
         }
 
         ui.add_space(8.0);
@@ -1102,10 +1144,11 @@ impl StudioApp {
                 });
                 ui.horizontal(|ui| {
                     ui.label("Header:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.tracklist_title)
-                            .hint_text("DAFTAR LAGU")
-                            .desired_width(120.0),
+                    theme::text_field(
+                        ui,
+                        &mut self.tracklist_title,
+                        "DAFTAR LAGU",
+                        theme::InputWidth::Fixed(120.0),
                     );
                 });
                 ui.label("Ukuran Font Daftar Lagu:");
@@ -1140,8 +1183,16 @@ impl StudioApp {
                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
         );
 
-        ui.label("Keburaman (Blur):");
-        ui.add(egui::Slider::new(&mut self.visualizer.bg_blur, 0.0..=20.0));
+        theme::control_slider(
+            ui,
+            "Keburaman (Blur)",
+            &mut self.visualizer.bg_blur,
+            0.0..=20.0,
+            "",
+            1,
+            None,
+            true,
+        );
 
         ui.horizontal(|ui| {
             ui.label("Warna Nuansa (Tint):");
@@ -1161,11 +1212,16 @@ impl StudioApp {
             "Bingkai Neon RGB Berputar",
         );
         if self.visualizer.bg_neon_frame {
-            ui.label("Ketebalan Bingkai Neon:");
-            ui.add(egui::Slider::new(
+            theme::control_slider(
+                ui,
+                "Ketebalan Bingkai Neon",
                 &mut self.visualizer.bg_neon_width,
                 4.0..=28.0,
-            ));
+                " px",
+                0,
+                None,
+                true,
+            );
         }
     }
 
@@ -1225,11 +1281,27 @@ impl StudioApp {
                 "Getar Mengikuti Ketukan (Beat Pulse)",
             );
 
-            ui.label("Ukuran Logo:");
-            ui.add(egui::Slider::new(&mut self.visualizer.overlay_size, 10.0..=100.0).text("%"));
+            theme::control_slider(
+                ui,
+                "Ukuran Logo",
+                &mut self.visualizer.overlay_size,
+                10.0..=100.0,
+                "%",
+                0,
+                None,
+                true,
+            );
 
-            ui.label("Opacity (Transparansi):");
-            ui.add(egui::Slider::new(&mut self.visualizer.overlay_opacity, 10.0..=100.0).text("%"));
+            theme::control_slider(
+                ui,
+                "Opacity (Transparansi)",
+                &mut self.visualizer.overlay_opacity,
+                10.0..=100.0,
+                "%",
+                0,
+                None,
+                true,
+            );
         }
     }
 

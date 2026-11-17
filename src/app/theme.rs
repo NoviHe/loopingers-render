@@ -65,11 +65,12 @@ pub mod metrics {
     pub const SPACE_6: f32 = EM * 1.60;
 
     // Controls
-    pub const CONTROL_HEIGHT: f32 = EM * 2.1;
+    pub const CONTROL_HEIGHT: f32 = 32.0;
+    pub const CONTROL_RADIUS: u8 = 8;
     pub const CONTROL_HEIGHT_LG: f32 = EM * 2.6;
-    pub const BUTTON_PAD_X: f32 = EM * 0.67;
-    pub const BUTTON_PAD_Y: f32 = EM * 0.40;
-    pub const INPUT_HEIGHT: f32 = EM * 2.0;
+    pub const BUTTON_PAD_X: f32 = 10.0;
+    pub const BUTTON_PAD_Y: f32 = 6.0;
+    pub const INPUT_HEIGHT: f32 = CONTROL_HEIGHT;
     pub const INPUT_WIDTH: f32 = EM * 18.0;
 
     // Radius
@@ -264,7 +265,7 @@ pub fn apply_with(ctx: &Context, dark: Palette, light: Palette) {
 }
 
 fn colors(s: &mut Style, p: &Palette) {
-    let sm_radius = CornerRadius::same(metrics::RADIUS_SM as u8);
+    let sm_radius = CornerRadius::same(metrics::CONTROL_RADIUS);
     let md_radius = CornerRadius::same(metrics::RADIUS_MD as u8);
 
     let w = &mut s.visuals.widgets;
@@ -285,8 +286,8 @@ fn colors(s: &mut Style, p: &Palette) {
     w.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text);
 
     // Buttons, combo boxes and checkboxes at rest.
-    w.inactive.weak_bg_fill = p.surface_alt;
-    w.inactive.bg_fill = p.surface_alt;
+    w.inactive.weak_bg_fill = p.bg;
+    w.inactive.bg_fill = p.bg;
     w.inactive.bg_stroke = Stroke::new(1.0_f32, p.border);
     w.inactive.fg_stroke = Stroke::new(1.0_f32, p.text);
 
@@ -446,7 +447,7 @@ pub struct StyledButton<'a> {
 impl<'a> StyledButton<'a> {
     pub fn new(atoms: impl IntoAtoms<'a>, variant: Variant) -> Self {
         let inner = Button::new(atoms)
-            .corner_radius(CornerRadius::same(metrics::RADIUS_SM as u8))
+            .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS))
             .wrap_mode(egui::TextWrapMode::Extend);
         Self { variant, inner }
     }
@@ -734,23 +735,150 @@ pub trait UiInputs {
     ) -> Response;
 }
 
+/// Reapplies the shared control metrics inside a locally styled panel.
+/// Layouts may still reduce spacing for transport bars or dense table rows.
+pub fn apply_control_style(ui: &mut Ui) {
+    let p = Palette::of(ui.ctx());
+    let style = ui.style_mut();
+    style.spacing.interact_size.y = metrics::CONTROL_HEIGHT;
+    style.spacing.button_padding = egui::vec2(metrics::BUTTON_PAD_X, metrics::BUTTON_PAD_Y);
+    let widgets = &mut style.visuals.widgets;
+    for state in [
+        &mut widgets.noninteractive,
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        state.corner_radius = CornerRadius::same(metrics::CONTROL_RADIUS);
+    }
+    widgets.inactive.bg_fill = p.bg;
+    widgets.inactive.weak_bg_fill = p.bg;
+    style.visuals.extreme_bg_color = p.bg;
+}
+
+fn input_width(ui: &Ui, width: InputWidth) -> f32 {
+    let available = ui.available_width().max(0.0);
+    match width {
+        InputWidth::Standard => metrics::INPUT_WIDTH.min(available),
+        InputWidth::Fill => available,
+        InputWidth::Fixed(width) => width.max(0.0).min(available),
+    }
+}
+
+/// A single-line input using the same outer frame and padding as batch fields.
+/// `width` includes the border and padding; the response belongs to the editor.
+pub fn text_field(
+    ui: &mut Ui,
+    text: &mut String,
+    hint: impl Into<egui::WidgetText>,
+    width: InputWidth,
+) -> Response {
+    add_text_input(ui, text, Some(hint.into()), width)
+}
+
 fn add_text_input(
     ui: &mut Ui,
     text: &mut String,
     hint: Option<egui::WidgetText>,
     width: InputWidth,
 ) -> Response {
-    let width = match width {
-        InputWidth::Standard => metrics::INPUT_WIDTH,
-        InputWidth::Fill => ui.available_width(),
-        InputWidth::Fixed(w) => w,
-    };
-
-    let mut input = egui::TextEdit::singleline(text).vertical_align(egui::Align::Center);
+    let p = Palette::of(ui.ctx());
+    let width = input_width(ui, width);
+    let padding_x = ((width - 2.0).max(0.0) / 2.0).min(10.0) as i8;
+    let inner_width = (width - f32::from(padding_x) * 2.0 - 2.0).max(0.0);
+    let mut input = egui::TextEdit::singleline(text)
+        .desired_width(inner_width)
+        .vertical_align(egui::Align::Center)
+        .frame(false)
+        .margin(egui::Margin::ZERO);
     if let Some(hint) = hint {
-        input = input.hint_text(hint);
+        input = input.hint_text(hint.color(p.text_muted));
     }
-    ui.add_sized([width, metrics::INPUT_HEIGHT], input)
+    let field = egui::Frame::new()
+        .fill(p.bg)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS))
+        .inner_margin(egui::Margin::symmetric(padding_x, 2))
+        .show(ui, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.add(input.min_size(egui::vec2(inner_width, metrics::INPUT_HEIGHT - 6.0)))
+            })
+            .inner
+        });
+    if field.inner.has_focus() || field.inner.hovered() {
+        let border = if field.inner.has_focus() {
+            p.accent
+        } else {
+            p.border_strong
+        };
+        ui.painter().rect_stroke(
+            field.response.rect,
+            CornerRadius::same(metrics::CONTROL_RADIUS),
+            Stroke::new(1.0_f32, border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    field.inner.union(field.response)
+}
+
+/// Shared slider row with an editable numeric field and optional action.
+#[allow(clippy::too_many_arguments)]
+pub fn control_slider<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+    decimals: usize,
+    action_label: Option<&str>,
+    action_enabled: bool,
+) -> bool {
+    let p = Palette::of(ui.ctx());
+    ui.muted_label(label)
+        .on_hover_text("Geser slider, seret nilai angka, atau klik angkanya untuk mengetik nilai.");
+    let mut action_clicked = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let reserved_width = if action_label.is_some() { 205.0 } else { 90.0 };
+        ui.spacing_mut().slider_width = (ui.available_width() - reserved_width).clamp(64.0, 200.0);
+        ui.add(
+            egui::Slider::new(value, range.clone())
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        egui::Frame::new()
+            .fill(p.bg)
+            .stroke(Stroke::new(1.0_f32, p.border))
+            .corner_radius(CornerRadius::same(metrics::CONTROL_RADIUS))
+            .inner_margin(egui::Margin::symmetric(6, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().interact_size.y = metrics::INPUT_HEIGHT - 6.0;
+                let visuals = &mut ui.visuals_mut().widgets;
+                visuals.inactive.bg_fill = Color32::TRANSPARENT;
+                visuals.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                visuals.inactive.bg_stroke = Stroke::NONE;
+                ui.add_sized(
+                    [56.0, metrics::INPUT_HEIGHT - 6.0],
+                    egui::DragValue::new(value)
+                        .range(range)
+                        .speed(if decimals == 0 { 1.0 } else { 0.1 })
+                        .fixed_decimals(decimals)
+                        .suffix(suffix),
+                );
+            });
+        if let Some(label) = action_label {
+            action_clicked = ui
+                .add_enabled(
+                    action_enabled,
+                    StyledButton::secondary(label)
+                        .min_size(egui::vec2(112.0, metrics::CONTROL_HEIGHT)),
+                )
+                .clicked();
+        }
+    });
+    ui.add_space(1.0);
+    action_clicked
 }
 
 impl UiInputs for Ui {
@@ -1230,7 +1358,7 @@ pub fn sidebar_tab(
     let size = egui::vec2(width, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let painter = ui.painter();
-    let sm_radius = CornerRadius::same(metrics::RADIUS_SM as u8);
+    let sm_radius = CornerRadius::same(metrics::CONTROL_RADIUS);
 
     if active {
         painter.rect_filled(rect, sm_radius, p.surface_alt);
@@ -1347,4 +1475,75 @@ pub fn panel_frame(ctx: &Context, inner: i8) -> egui::Frame {
             top: GAP,
             bottom: 0,
         })
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+
+    #[test]
+    fn standard_controls_render_at_matching_heights() {
+        let ctx = Context::default();
+        let mut text = String::new();
+        let mut value = 50.0;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                apply_control_style(ui);
+                let field = text_field(ui, &mut text, "Contoh", InputWidth::Fixed(160.0));
+                let select = egui::ComboBox::from_id_salt("standard_control_test")
+                    .selected_text("Pilihan")
+                    .show_ui(ui, |ui| {
+                        ui.label("Pilihan");
+                    })
+                    .response;
+                let slider = ui.add(egui::Slider::new(&mut value, 0.0..=100.0).show_value(false));
+                let button = ui.add(StyledButton::secondary("Tombol"));
+                for response in [select, slider, button] {
+                    assert!(
+                        (response.rect.height() - field.rect.height()).abs() < 0.1,
+                        "control height {} differs from field {}",
+                        response.rect.height(),
+                        field.rect.height()
+                    );
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn text_fields_keep_outer_size_and_fit_narrow_panels() {
+        for available in [12.0_f32, 80.0, 300.0] {
+            for requested in [InputWidth::Fill, InputWidth::Fixed(100.0)] {
+                let ctx = Context::default();
+                let mut text = String::new();
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(available, 100.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(available);
+                                let field = text_field(ui, &mut text, "Contoh", requested);
+                                let expected_width = match requested {
+                                    InputWidth::Fixed(width) => width.min(available),
+                                    _ => available,
+                                };
+                                assert!(
+                                    (field.rect.height() - metrics::INPUT_HEIGHT).abs() < 0.1,
+                                    "outer height was {}",
+                                    field.rect.height()
+                                );
+                                assert!(
+                                    (field.rect.width() - expected_width).abs() < 0.1,
+                                    "outer width was {}, expected {}",
+                                    field.rect.width(),
+                                    expected_width
+                                );
+                            },
+                        );
+                    });
+                });
+            }
+        }
+    }
 }

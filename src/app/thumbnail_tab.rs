@@ -389,15 +389,6 @@ impl StudioApp {
     }
 
     pub(super) fn thumbnail_tab(&mut self, ui: &mut egui::Ui) {
-        let p = theme::Palette::of(ui.ctx());
-        ui.spacing_mut().interact_size.y = 32.0;
-        ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-        widgets.inactive.bg_fill = p.bg;
-        widgets.inactive.weak_bg_fill = p.bg;
-        widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-        widgets.active.corner_radius = egui::CornerRadius::same(8);
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.page_title("Thumbnail");
         ui.muted_label(
@@ -505,14 +496,9 @@ impl StudioApp {
             let automatic_title = state.use_first_title && first_title.is_some();
             let mut first_title_text = first_title.unwrap_or_default();
             let title_input = if automatic_title { &mut first_title_text } else { &mut state.title };
-            ui.add_enabled(!automatic_title,
-                egui::TextEdit::singleline(title_input)
-                    .hint_text(egui::RichText::new(EXAMPLE_TITLE).color(p.text_muted))
-                    .background_color(p.bg)
-                    .vertical_align(egui::Align::Center)
-                    .margin(egui::Margin::symmetric(10, 6))
-                    .desired_width(f32::INFINITY),
-            );
+            ui.add_enabled_ui(!automatic_title, |ui| {
+                theme::text_field(ui, title_input, EXAMPLE_TITLE, theme::InputWidth::Fill);
+            });
 
             // Font Selector Judul Utama
             ui.horizontal_wrapped(|ui| {
@@ -586,14 +572,7 @@ impl StudioApp {
                         .on_hover_text("Sembunyikan Sub Judul pada preview, thumbnail, dan overlay video tanpa menghapus teksnya.");
                 });
             });
-            ui.add(
-                egui::TextEdit::singleline(&mut state.subtitle)
-                    .hint_text(egui::RichText::new(EXAMPLE_SUBTITLE).color(p.text_muted))
-                    .background_color(p.bg)
-                    .vertical_align(egui::Align::Center)
-                    .margin(egui::Margin::symmetric(10, 6))
-                    .desired_width(f32::INFINITY),
-            );
+            theme::text_field(ui, &mut state.subtitle, EXAMPLE_SUBTITLE, theme::InputWidth::Fill);
 
             // Font Selector Sub Judul
             ui.horizontal_wrapped(|ui| {
@@ -1277,55 +1256,27 @@ fn thumbnail_slider<T: egui::emath::Numeric>(
     action_label: Option<&str>,
     action_enabled: bool,
 ) -> bool {
-    let p = theme::Palette::of(ui.ctx());
-    ui.muted_label(label).on_hover_text(match label {
+    let tooltip = match label {
         "Ukuran Judul" => help::TITLE_SIZE,
         "Ukuran Lagu" => help::TRACK_SIZE,
         "Posisi Frame" => help::FRAME,
         "Gelap di Tepi (Vignette)" => help::VIGNETTE,
         _ => "Geser slider, seret nilai angka, atau klik angkanya untuk mengetik nilai.",
+    };
+    let response = ui.scope(|ui| {
+        theme::control_slider(
+            ui,
+            label,
+            value,
+            range,
+            suffix,
+            decimals,
+            action_label,
+            action_enabled,
+        )
     });
-    let mut action_clicked = false;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        ui.spacing_mut().interact_size.y = 24.0;
-        let reserved_width = if action_label.is_some() { 205.0 } else { 90.0 };
-        ui.spacing_mut().slider_width = (ui.available_width() - reserved_width).clamp(64.0, 200.0);
-        ui.add(
-            egui::Slider::new(value, range.clone())
-                .show_value(false)
-                .trailing_fill(true),
-        );
-        egui::Frame::new()
-            .fill(p.bg)
-            .stroke(egui::Stroke::new(1.0_f32, p.border))
-            .corner_radius(8)
-            .inner_margin(egui::Margin::symmetric(6, 1))
-            .show(ui, |ui| {
-                let visuals = &mut ui.visuals_mut().widgets;
-                visuals.inactive.bg_fill = egui::Color32::TRANSPARENT;
-                visuals.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-                visuals.inactive.bg_stroke = egui::Stroke::NONE;
-                ui.add_sized(
-                    [56.0, 26.0],
-                    egui::DragValue::new(value)
-                        .range(range)
-                        .speed(if decimals == 0 { 1.0 } else { 0.1 })
-                        .fixed_decimals(decimals)
-                        .suffix(suffix),
-                );
-            });
-        if let Some(label) = action_label {
-            action_clicked = ui
-                .add_enabled(
-                    action_enabled,
-                    theme::StyledButton::secondary(label).min_size(egui::vec2(112.0, 32.0)),
-                )
-                .clicked();
-        }
-    });
-    ui.add_space(1.0);
-    action_clicked
+    response.response.on_hover_text(tooltip);
+    response.inner
 }
 
 fn thumbnail_percentage(

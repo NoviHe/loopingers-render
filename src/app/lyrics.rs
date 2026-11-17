@@ -620,27 +620,7 @@ impl StandaloneLyricsState {
 
 impl StudioApp {
     pub(super) fn lyrics_tab(&mut self, ui: &mut egui::Ui) {
-        let p = theme::Palette::of(ui.ctx());
         self.lrc_studio.tick(ui.ctx());
-        ui.spacing_mut().interact_size.y = 32.0;
-        ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
-        let widgets = &mut ui.visuals_mut().widgets;
-        widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
-        widgets.noninteractive.bg_fill = p.bg;
-        widgets.noninteractive.weak_bg_fill = p.bg;
-        widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
-        widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-        widgets.inactive.bg_fill = p.bg;
-        widgets.inactive.weak_bg_fill = p.bg;
-        widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, p.border);
-        widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-        widgets.hovered.bg_fill = p.surface;
-        widgets.hovered.weak_bg_fill = p.surface;
-        widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, p.accent);
-        widgets.active.corner_radius = egui::CornerRadius::same(8);
-        widgets.active.bg_fill = p.bg;
-        widgets.active.weak_bg_fill = p.bg;
-        widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, p.accent);
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.page_title("Lirik");
         ui.muted_label(
@@ -731,7 +711,7 @@ impl StudioApp {
                 ui,
                 GenerateIcon::Sliders,
                 "Tampilan Karaoke",
-                "Font, warna, posisi, dan pratinjau lirik.",
+                "Font, warna, posisi, dan preview lirik.",
             );
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -755,7 +735,7 @@ impl StudioApp {
                     },
                 );
             });
-            ui.muted_label("Pratinjau memakai lagu dan video Generate. Pembakaran lirik dengan gaya ini tersedia melalui Render Old; Generate saat ini belum membakar lirik karaoke.");
+            ui.muted_label("Preview memakai lagu dan video Generate. Pembakaran lirik dengan gaya ini tersedia melalui Render Old; Generate saat ini belum membakar lirik karaoke.");
         });
         if ui.available_width() >= 1080.0 {
             ui.columns(2, |columns| {
@@ -831,14 +811,14 @@ impl StudioApp {
             });
     }
 
-    /// Pratinjau seperti Thumbnail / Main Menu: background + daftar lagu + contoh teks karaoke,
+    /// Preview seperti Thumbnail / Main Menu: background + daftar lagu + contoh teks karaoke,
     /// lengkap dengan peringatan bila posisi karaoke menumpuk dengan judul / daftar lagu.
     fn karaoke_preview_card(&mut self, ui: &mut egui::Ui) {
         let p = theme::Palette::of(ui.ctx());
         let preview_path = self.thumbnail_preview_path();
 
         ui.horizontal(|ui| {
-            ui.strong("Pratinjau Karaoke");
+            ui.strong("Preview Karaoke");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(video) = &self.generate.video {
                     ui.weak(format!("{}x{}", video.width, video.height));
@@ -909,19 +889,20 @@ impl StudioApp {
             ui.colored_label(theme::SUCCESS, "✓ Posisi karaoke aman, tidak menumpuk.");
         }
         if self.generate.video.is_none() {
-            ui.muted_label("Pilih video di Generate untuk menyiapkan latar pratinjau.");
+            ui.muted_label("Pilih video di Generate untuk menyiapkan latar preview.");
         }
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Teks contoh:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.karaoke_preview_text)
-                    .hint_text("Kosong = baris lirik pertama dari playlist")
-                    .desired_width(f32::INFINITY),
-            )
-            .on_hover_text("Coba teks panjang untuk memastikan lirik yang terbungkus 2 baris tetap tidak menumpuk");
-        });
+        ui.label("Teks contoh:");
+        theme::text_field(
+            ui,
+            &mut self.karaoke_preview_text,
+            "Kosong = baris lirik pertama dari playlist",
+            theme::InputWidth::Fill,
+        )
+        .on_hover_text(
+            "Coba teks panjang untuk memastikan lirik yang terbungkus 2 baris tetap tidak menumpuk",
+        );
     }
 
     /// Baris contoh untuk pratinjau: teks khusus, baris lirik nyata pertama, atau teks bawaan.
@@ -944,7 +925,7 @@ impl StudioApp {
                 .flat_map(|track| track.lines.iter())
                 .find(|line| !line.text.trim().is_empty())
                 .map(|line| line.text.clone())
-                .unwrap_or_else(|| "Pratinjau teks karaoke Anda".into());
+                .unwrap_or_else(|| "Preview teks karaoke Anda".into());
         }
         self.tracks
             .iter()
@@ -2715,10 +2696,9 @@ impl StudioApp {
         ui.add_space(4.0);
 
         ui.horizontal_wrapped(|ui| {
-            theme::info(ui, help::THEME);
             for (index, (_, theme)) in THEMES.iter().enumerate() {
                 if ui
-                    .selectable_label(self.theme == index, theme.name)
+                    .add(theme::StyledButton::secondary(theme.name).selected(self.theme == index))
                     .clicked()
                 {
                     self.theme = index;
@@ -2738,7 +2718,10 @@ impl StudioApp {
                 KARAOKE_FONTS[preset_idx].label.to_string()
             };
 
+            let font_width = ui.available_width().min(theme::metrics::INPUT_WIDTH);
             egui::ComboBox::from_id_salt("karaoke_font_select")
+                .width(font_width)
+                .truncate()
                 .selected_text(current_font_label)
                 .show_ui(ui, |ui| {
                     for (idx, font) in KARAOKE_FONTS.iter().enumerate() {
@@ -2757,7 +2740,7 @@ impl StudioApp {
                 });
 
             if ui
-                .button("📁 Unggah Font...")
+                .add(theme::StyledButton::secondary("📁 Unggah Font..."))
                 .on_hover_text("Pilih berkas font (.ttf / .otf) dari komputer Anda")
                 .clicked()
             {
@@ -2771,25 +2754,39 @@ impl StudioApp {
                 }
             }
 
-            if self.style.custom_font.is_some() && ui.small_button("✔ Reset ke Default").clicked()
+            if self.style.custom_font.is_some()
+                && ui
+                    .add(theme::StyledButton::secondary("✔ Reset ke Default").small())
+                    .clicked()
             {
                 self.style.custom_font = None;
                 self.reload_egui_fonts();
             }
         });
-        ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut self.style.font_size, 20..=120).text("Ukuran font"));
-            theme::info(ui, help::FONT_SIZE);
-        });
+        ui.scope(|ui| {
+            theme::control_slider(
+                ui,
+                "Ukuran font",
+                &mut self.style.font_size,
+                20..=120,
+                " px",
+                0,
+                None,
+                true,
+            )
+        })
+        .response
+        .on_hover_text(help::FONT_SIZE);
         ui.add_space(4.0);
-        theme::label_with_info(ui, "Posisi Karaoke (Slider X & Y):", help::POSITION);
         ui.horizontal(|ui| {
+            theme::label_with_info(ui, "Posisi Karaoke (Slider X & Y):", help::POSITION);
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.label("Preset Cepat:");
             if ui
-                .selectable_label(
+                .add(theme::StyledButton::secondary("Bawah").selected(
                     (self.style.pos_x - 50.0).abs() < 1.0 && (self.style.pos_y - 85.0).abs() < 1.0,
-                    "Bawah",
-                )
+                ))
                 .clicked()
             {
                 self.style.pos_x = 50.0;
@@ -2797,10 +2794,9 @@ impl StudioApp {
                 self.style.alignment = 2;
             }
             if ui
-                .selectable_label(
+                .add(theme::StyledButton::secondary("Tengah").selected(
                     (self.style.pos_x - 50.0).abs() < 1.0 && (self.style.pos_y - 50.0).abs() < 1.0,
-                    "Tengah",
-                )
+                ))
                 .clicked()
             {
                 self.style.pos_x = 50.0;
@@ -2808,10 +2804,9 @@ impl StudioApp {
                 self.style.alignment = 5;
             }
             if ui
-                .selectable_label(
+                .add(theme::StyledButton::secondary("Atas").selected(
                     (self.style.pos_x - 50.0).abs() < 1.0 && (self.style.pos_y - 15.0).abs() < 1.0,
-                    "Atas",
-                )
+                ))
                 .clicked()
             {
                 self.style.pos_x = 50.0;
@@ -2819,40 +2814,34 @@ impl StudioApp {
                 self.style.alignment = 8;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Posisi X:");
-            ui.add(
-                egui::Slider::new(&mut self.style.pos_x, 0.0..=100.0)
-                    .suffix("%")
-                    .text("Horizontal"),
-            );
-            if ui
-                .small_button("↺ 50%")
-                .on_hover_text("Kembalikan posisi X ke tengah")
-                .clicked()
-            {
-                self.style.pos_x = 50.0;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Posisi Y:");
-            ui.add(
-                egui::Slider::new(&mut self.style.pos_y, 0.0..=100.0)
-                    .suffix("%")
-                    .text("Vertikal"),
-            );
-            if ui
-                .small_button("↺ 85%")
-                .on_hover_text("Kembalikan posisi Y ke bawah")
-                .clicked()
-            {
-                self.style.pos_y = 85.0;
-            }
-        });
+        if theme::control_slider(
+            ui,
+            "Posisi X (Horizontal)",
+            &mut self.style.pos_x,
+            0.0..=100.0,
+            "%",
+            0,
+            Some("Reset 50%"),
+            true,
+        ) {
+            self.style.pos_x = 50.0;
+        }
+        if theme::control_slider(
+            ui,
+            "Posisi Y (Vertikal)",
+            &mut self.style.pos_y,
+            0.0..=100.0,
+            "%",
+            0,
+            Some("Reset 85%"),
+            true,
+        ) {
+            self.style.pos_y = 85.0;
+        }
         egui::CollapsingHeader::new("Pengaturan lanjutan")
             .default_open(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     theme::info(ui, help::COLORS);
                     ui.label("Normal");
                     ui.color_edit_button_srgb(&mut self.style.normal);
@@ -2863,19 +2852,26 @@ impl StudioApp {
                     ui.label("Bayangan");
                     ui.color_edit_button_srgb(&mut self.style.shadow);
                 });
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Slider::new(&mut self.style.margin_v, 0..=300)
-                            .text("Jarak dari tepi (Margin)"),
-                    );
-                    theme::info(ui, help::MARGIN);
-                });
-                ui.horizontal(|ui| {
+                ui.scope(|ui| {
+                    theme::control_slider(
+                        ui,
+                        "Jarak dari tepi (Margin)",
+                        &mut self.style.margin_v,
+                        0..=300,
+                        " px",
+                        0,
+                        None,
+                        true,
+                    )
+                })
+                .response
+                .on_hover_text(help::MARGIN);
+                ui.horizontal_wrapped(|ui| {
                     theme::label_with_info(ui, "Efek wipe:", help::WIPE);
                     ui.radio_value(&mut self.style.smooth_wipe, true, "Halus");
                     ui.radio_value(&mut self.style.smooth_wipe, false, "Per kata");
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(
                         &mut self.style.show_intro,
                         "Banner judul & penyanyi di awal",
