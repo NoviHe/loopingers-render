@@ -20,6 +20,8 @@ use super::{
     StudioApp, Tab,
 };
 
+#[path = "batch_execution.rs"]
+mod execution;
 #[path = "batch_plan.rs"]
 mod planning;
 use planning::{BatchPlan, BatchSettings, PlanTrack};
@@ -41,9 +43,17 @@ pub(crate) struct BatchRenderState {
     settings: BatchSettings,
     plan: Option<BatchPlan>,
     plan_error: Option<String>,
+    execution: Option<loopkaraoke::render::batch::BatchHandle>,
+    execution_codes: Vec<String>,
+    auto_thumbnail: bool,
 }
 
 impl BatchRenderState {
+    pub fn is_running(&self) -> bool {
+        self.execution
+            .as_ref()
+            .is_some_and(|handle| handle.is_running())
+    }
     pub fn set_visual_dir(&mut self, dir: PathBuf) {
         self.plan = None;
         self.plan_error = None;
@@ -85,13 +95,7 @@ impl StudioApp {
     pub(super) fn batch_render_tab(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 8.0;
 
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.page_title("Batch Render");
-            ui.muted_label(
-                "Dari satu project (daftar lagu) → banyak video, tiap video urutan lagu, durasi, visual & thumbnail berbeda.",
-            );
-        });
+        theme::page_header(ui, "Batch Render", "Dari satu project (daftar lagu) → banyak video, tiap video urutan lagu, durasi, visual & thumbnail berbeda.");
 
         ui.add_space(4.0);
         self.batch_playlist_card(ui);
@@ -121,6 +125,8 @@ impl StudioApp {
         let loading_id = self.generate.loading_preview_id;
 
         let mut open_generate = false;
+        let mut add_files = false;
+        let mut add_folder = false;
         let mut copy_clicked = false;
         let mut speaker_clicked = false;
         let mut speaker_rect = None;
@@ -128,21 +134,18 @@ impl StudioApp {
 
         generate_card(ui, |ui| {
             ui.horizontal(|ui| {
-                card_header(
-                    ui,
-                    GenerateIcon::Music,
-                    "Playlist Album",
-                    "Sinkron dengan halaman Generate.",
-                );
+                if outline_icon_button(ui, GenerateIcon::PlusCircle, "Tambah Lagu").clicked() {
+                    add_files = true;
+                }
+                if outline_icon_button(ui, GenerateIcon::Folder, "Tambah Folder").clicked() {
+                    add_folder = true;
+                }
+                if outline_icon_button(ui, GenerateIcon::Play, "Buka Generate").clicked() {
+                    open_generate = true;
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if outline_icon_button(ui, GenerateIcon::PlusCircle, "Kelola di Generate")
-                        .clicked()
-                    {
-                        open_generate = true;
-                    }
-
                     if has_tracks {
                         let vol_pct = self.generate.preview_volume.round() as u32;
                         let speaker_icon = if vol_pct == 0 {
@@ -182,6 +185,7 @@ impl StudioApp {
                 });
             });
 
+            ui.muted_label("Seret file audio atau folder ke halaman ini. Perubahan daftar dan urutan langsung berlaku di Generate dan Batch Render.");
             ui.add_space(6.0);
             draw_card_divider(ui);
 
@@ -228,6 +232,17 @@ impl StudioApp {
 
         if open_generate {
             self.tab = Tab::Generate;
+        }
+        // Keep import actions available when the shared Generate playlist is
+        // empty; the preview controls below are the only part that needs tracks.
+        if add_files || add_folder {
+            if !self.ffmpeg_ready {
+                self.warn("Menunggu FFmpeg siap sebelum mengimpor lagu.");
+            } else if add_files {
+                self.pick_generate_audio_files();
+            } else {
+                self.pick_generate_audio_folders();
+            }
         }
         if !has_tracks {
             return;
@@ -278,12 +293,10 @@ impl StudioApp {
                 duration: track.duration,
             })
             .collect();
-        if self
-            .batch_render
-            .plan
-            .as_ref()
-            .is_some_and(|plan| plan.tracks != tracks)
-        {
+        if self.batch_render.plan.as_ref().is_some_and(|plan| {
+            plan.tracks != tracks
+                || plan.crossfade_secs != self.generate.crossfade_secs.clamp(0.0, 30.0)
+        }) {
             self.batch_render.plan = None;
             self.batch_render.plan_error = None;
         }
@@ -295,6 +308,11 @@ impl StudioApp {
         let mut clear_visual_dir = false;
         let mut pick_thumbnail_dir = false;
         let mut clear_thumbnail_dir = false;
+        let mut start_batch = false;
+        let mut open_error = None;
+        let mut pick_output = false;
+        let running = self.batch_render.is_running();
+        let can_start = !self.job_running() && self.ffmpeg_ready && self.hardware.is_some();
 
         let visual_status = self.batch_render.visual_dir.as_ref().map(|dir| {
             (
@@ -330,6 +348,7 @@ impl StudioApp {
                 "Hasilkan banyak video dari satu daftar lagu. Setiap video memiliki urutan lagu, durasi, video visual, dan thumbnail yang berbeda.",
             );
 
+            ui.add_enabled_ui(!running, |ui| {
             ui.add_space(8.0);
             draw_usage_callout(ui);
 
@@ -368,7 +387,33 @@ impl StudioApp {
             }
             ui.add_space(2.0);
             thumbnail_rule_hint(ui);
+            ui.horizontal_wrapped(|ui| {
+                ui.toggle_value(&mut self.batch_render.auto_thumbnail, "Auto Thumbnail");
+                if self.batch_render.auto_thumbnail
+                    && outline_icon_button(ui, GenerateIcon::Sliders, "Thumbnail").clicked()
+                {
+                    self.open_generate_thumbnail_settings();
+                }
+            });
+            ui.muted_label("Thumbnail dari folder diprioritaskan. Aktifkan Auto Thumbnail untuk membuat thumbnail bagi visual yang belum punya pasangan.");
+            ui.add_space(8.0);
+            ui.muted_label("Folder output");
+            if outline_icon_button(ui, GenerateIcon::Folder, "Pilih Folder Output").clicked() {
+                pick_output = true;
+            }
+            ui.muted_label(
+                self.generate
+                    .output_dir
+                    .as_ref()
+                    .unwrap_or(&self.paths.outputs)
+                    .display()
+                    .to_string(),
+            );
+            ui.muted_label(
+                "Kualitas, resolusi, audio, dan variasi visual mengikuti pengaturan Generate.",
+            );
 
+            });
             ui.add_space(12.0);
             draw_card_divider(ui);
             ui.add_space(10.0);
@@ -396,7 +441,7 @@ impl StudioApp {
             ui.add_space(10.0);
             draw_card_divider(ui);
             ui.add_space(10.0);
-            ui.muted_label("Durasi tiap video");
+            ui.muted_label("Durasi tiap video (opsional)");
             let duration_width = ((ui.available_width() - 16.0) / 2.0).clamp(80.0, 180.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
@@ -412,11 +457,11 @@ impl StudioApp {
                 });
             });
             ui.muted_label(
-                "Format MM:SS atau HH:MM:SS. Durasi dipilih secara acak dalam rentang ini.",
+                "Kosongkan semua durasi untuk mengacak jumlah lagu. Isi minimum dan maksimum untuk menyusun lagu utuh dalam rentang, dengan pengulangan jika playlist terlalu pendek.",
             );
             ui.add_space(8.0);
             ui.muted_label("Durasi manual (opsional)");
-            ui.muted_label("Ingin durasi yang Anda tentukan sendiri? Isi daftar durasi di bawah (satu per baris), satu durasi untuk tiap video. Durasi manual menggantikan rentang acak.");
+            ui.muted_label("Isi satu perkiraan durasi per video. Rencana memakai lagu utuh dalam toleransi ±30 detik dan mengutamakan isian ini di atas rentang minimum–maksimum.");
             let p = theme::Palette::of(ui.ctx());
             egui::Frame::new()
                 .fill(p.bg)
@@ -451,11 +496,27 @@ impl StudioApp {
             }
             ui.add_space(12.0);
             ui.horizontal_wrapped(|ui| {
-                build_plan = ui.secondary_button("⟳  Buat Rencana").clicked();
-                export_plan = ui.add_enabled(self.batch_render.plan.is_some(), theme::StyledButton::secondary("▣  Export Daftar Lagu")).clicked();
-                ui.add_enabled(false, theme::StyledButton::primary("▷  Mulai Batch"))
-                    .on_disabled_hover_text("Pipeline antrean batch belum tersedia. Gunakan Mulai Render di Generate untuk render satu video.");
+                build_plan = ui
+                    .add_enabled(!running, theme::StyledButton::secondary("⟳  Buat Rencana"))
+                    .clicked();
+                export_plan = ui
+                    .add_enabled(
+                        self.batch_render.plan.is_some(),
+                        theme::StyledButton::secondary("▣  Export Daftar Lagu"),
+                    )
+                    .clicked();
+                start_batch = ui
+                    .add_enabled(
+                        can_start && self.batch_render.plan.is_some(),
+                        theme::StyledButton::primary("▷  Mulai Batch"),
+                    )
+                    .on_disabled_hover_text(
+                        "Buat rencana dan tunggu FFmpeg, hardware, serta render lain selesai.",
+                    )
+                    .clicked();
+                self.batch_execution_actions(ui);
             });
+            self.batch_execution_progress(ui);
             if build_plan || build_and_export {
                 match planning::build_plan(
                     &self.batch_render.settings,
@@ -463,6 +524,7 @@ impl StudioApp {
                     &self.batch_render.thumbnail_files,
                     &tracks,
                     &mut rand::thread_rng(),
+                    self.generate.crossfade_secs.clamp(0.0, 30.0),
                 ) {
                     Ok(plan) => {
                         self.batch_render.plan = Some(plan);
@@ -481,21 +543,42 @@ impl StudioApp {
             }
             if let Some(plan) = &self.batch_render.plan {
                 ui.add_space(4.0);
+                let visual_count = self.batch_render.visual_files.len();
+                if plan.videos.len() > visual_count {
+                    let warning = theme::Palette::of(ui.ctx()).warning;
+                    batch_plan_panel(ui, false, |ui| {
+                        ui.colored_label(
+                            warning,
+                            format!("Folder visual hanya berisi {visual_count} video. File visual dipakai ulang secara acak."),
+                        );
+                    });
+                }
                 batch_plan_panel(ui, false, |ui| {
                     ui.muted_label(format!(
-                        "Rencana siap: {} video. Ekspor daftar lagu untuk membuat thumbnail. Render batch belum tersedia.",
+                        "Rencana siap: {} video. Mulai Batch menjalankan rencana ini tanpa mengacak ulang urutan lagu.",
                         plan.videos.len()
                     ));
                 });
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("batch_plan_preview")
-                    .max_height(360.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        for (index, video) in plan.videos.iter().enumerate() {
-                            batch_plan_panel(ui, false, |ui| {
+                let font = FontId::new(
+                    theme::metrics::FONT_SM,
+                    FontFamily::Name(theme::SEMIBOLD.into()),
+                );
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    let execution = self.batch_render.execution.as_ref().map(|handle| handle.snapshot());
+                    for (index, video) in plan.videos.iter().enumerate() {
+                        let result = execution.as_ref().and_then(|snapshot| {
+                            if self.batch_render.execution_codes.get(index) == Some(&video.output_code) {
+                                snapshot.finished.get(index)
+                            } else {
+                                None
+                            }
+                        });
+                        batch_plan_frame(ui, false)
+                            .inner_margin(egui::Margin::symmetric(12, 3))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
                                 let visual = video
                                     .visual
                                     .file_name()
@@ -506,29 +589,105 @@ impl StudioApp {
                                     .as_ref()
                                     .and_then(|path| path.file_name())
                                     .map(|name| name.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| "Belum cocok".into());
+                                    .unwrap_or_else(|| {
+                                        if self.batch_render.auto_thumbnail {
+                                            "Otomatis".into()
+                                        } else {
+                                            "Belum cocok".into()
+                                        }
+                                    });
                                 let seconds = video.duration;
-                                let label = format!(
-                                    "VIDEO {} ? {} ? {:02}:{:02}:{:02} ? thumb: {}",
+                                let duration = if seconds < 3600 {
+                                format!("{:02}:{:02}", seconds / 60, seconds % 60)
+                            } else {
+                                format!("{:02}:{:02}:{:02}", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
+                            };
+                            let label = format!(
+                                    "Video {} · {} · {} · Thumbnail: {}",
                                     index + 1,
                                     visual,
-                                    seconds / 3600,
-                                    (seconds % 3600) / 60,
-                                    seconds % 60,
+                                    duration,
                                     thumbnail
                                 );
-                                ui.label(
-                                    egui::RichText::new(label)
-                                        .size(theme::metrics::FONT_SM)
-                                        .strong()
-                                        .color(theme::Palette::of(ui.ctx()).text_strong),
+                                let palette = theme::Palette::of(ui.ctx());
+                                ui.visuals_mut().widgets.hovered.fg_stroke.color =
+                                    palette.accent_hover;
+                                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                    if let Some(path) = result.and_then(|result| result.output.as_ref()) {
+                                        if let Some(folder) = path.parent() {
+                                            if outline_icon_button(ui, GenerateIcon::Folder, "Folder").clicked() {
+                                                if let Err(error) = loopkaraoke::util::open_path(folder) {
+                                                    open_error = Some(error);
+                                                }
+                                            }
+                                        }
+                                        if outline_icon_button(ui, GenerateIcon::Play, "Putar").clicked() {
+                                            if let Err(error) = loopkaraoke::util::open_path(path) {
+                                                open_error = Some(error);
+                                            }
+                                        }
+                                    }
+                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 0.0), Layout::top_down(Align::Min), |ui| {
+                                let header = egui::CollapsingHeader::new(
+                                    egui::RichText::new(label).font(font.clone()),
                                 )
-                                .on_hover_text(video.visual.display().to_string());
+                                .id_salt(("batch_plan_video", index))
+                                .show(ui, |ui| {
+                                    let code = &video.output_code;
+                                    ui.muted_label(format!(
+                                        "Visual: video_{code} · Thumbnail: thumbnail_{code} · Durasi: {duration}"
+                                    ));
+                                    if let Some(requested) = video.requested_duration {
+                                        ui.muted_label(format!(
+                                            "Durasi diminta: {} · Durasi rencana: {duration}",
+                                            format_track_duration(requested)
+                                        ));
+                                    }
+                                    ui.separator();
+                                    ui.label(egui::RichText::new("Urutan Lagu").strong());
+                                    for (position, track_index) in video.order.iter().enumerate() {
+                                        if let Some(track) = plan.tracks.get(*track_index) {
+                                            let duration = format_track_duration(
+                                                track.duration.round().max(0.0) as u64,
+                                            );
+                                            ui.label(format!(
+                                                "{}. {} · {duration}",
+                                                position + 1,
+                                                track.title
+                                            ));
+                                        }
+                                    }
+                                });
+                                header
+                                    .header_response
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                        if let Some(result) = result {
+                                            if let Some(error) = &result.error {
+                                                ui.colored_label(palette.danger, error);
+                                            }
+                                            if let Some(warning) = &result.warning {
+                                                ui.colored_label(palette.warning, warning);
+                                            }
+                                        }
+                                    });
+                                });
                             });
-                        }
-                    });
+                    }
+                });
             }
         });
+
+        if let Some(error) = open_error {
+            self.error(format!("Gagal membuka hasil render: {error}"));
+        }
+        if pick_output {
+            if let Some(folder) = pick_folder_dialog(self.generate.output_dir.as_deref()) {
+                self.generate.output_dir = Some(folder);
+            }
+        }
+        if start_batch {
+            self.start_batch_execution();
+        }
 
         if export_plan || build_and_export {
             if let Some(plan) = &self.batch_render.plan {
@@ -577,13 +736,17 @@ impl StudioApp {
     }
 }
 
-fn batch_plan_panel(ui: &mut egui::Ui, error: bool, contents: impl FnOnce(&mut egui::Ui)) {
+fn batch_plan_frame(ui: &egui::Ui, error: bool) -> egui::Frame {
     let p = theme::Palette::of(ui.ctx());
     let tint = if error { p.danger } else { p.success };
     egui::Frame::new()
         .fill(tint.gamma_multiply(0.06))
         .stroke(Stroke::new(1.0_f32, tint.gamma_multiply(0.22)))
         .corner_radius(CornerRadius::same(8))
+}
+
+fn batch_plan_panel(ui: &mut egui::Ui, error: bool, contents: impl FnOnce(&mut egui::Ui)) {
+    batch_plan_frame(ui, error)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -756,7 +919,7 @@ fn draw_usage_callout(ui: &mut egui::Ui) {
                 ui,
                 "3. ",
                 "Mulai Batch",
-                " — belum tersedia; saat ini render satu video melalui halaman Generate.",
+                " — render seluruh rencana secara berurutan, lengkap dengan video dan thumbnail.",
                 &p,
             );
         })

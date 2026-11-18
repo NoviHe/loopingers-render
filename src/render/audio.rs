@@ -97,11 +97,7 @@ pub async fn merge_tracks_detailed(
         || options.fade_out_secs > 0.0
         || (options.crossfade_secs > 0.0 && inputs.len() > 1);
     let durations = if need_durations {
-        let mut probed = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            probed.push(probe_audio(tools, input).await?.duration.max(0.0));
-        }
-        probed
+        probe_track_durations(tools, inputs).await?
     } else {
         vec![0.0; inputs.len()]
     };
@@ -204,6 +200,27 @@ fn build_fade_out_filter(total_duration: f64, fade_out_secs: f64) -> Option<Stri
     let d = fade_out_secs.min(total_duration);
     let st = (total_duration - d).max(0.0);
     Some(format!("afade=t=out:st={st:.3}:d={d:.3}"))
+}
+
+/// Probe a bounded number of files concurrently, preserving playlist order for chapters.
+async fn probe_track_durations(tools: &Tools, inputs: &[PathBuf]) -> Result<Vec<f64>> {
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut remaining = inputs.iter().enumerate();
+    let mut durations = vec![0.0; inputs.len()];
+    for (index, path) in remaining.by_ref().take(4) {
+        let (tools, path) = (tools.clone(), path.clone());
+        tasks.spawn(async move { (index, probe_audio(&tools, &path).await) });
+    }
+    while let Some(result) = tasks.join_next().await {
+        let (index, info) = result
+            .map_err(|error| Error::internal(format!("Pemeriksaan audio terhenti: {error}")))?;
+        durations[index] = info?.duration.max(0.0);
+        if let Some((index, path)) = remaining.next() {
+            let (tools, path) = (tools.clone(), path.clone());
+            tasks.spawn(async move { (index, probe_audio(&tools, &path).await) });
+        }
+    }
+    Ok(durations)
 }
 
 fn build_join_graph(durations: &[f64], options: &AudioMergeOptions) -> (String, String, f64) {

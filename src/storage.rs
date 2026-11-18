@@ -6,7 +6,7 @@ use std::{
 
 use chrono::{DateTime, Local};
 
-use crate::{config::AppPaths, util::round2};
+use crate::{config::AppPaths, karaoke::preview::managed_preview_files, util::round2};
 
 const BYTES_PER_MB: f64 = 1024.0 * 1024.0;
 
@@ -58,7 +58,26 @@ fn is_gitkeep(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == ".gitkeep")
 }
 
-fn dir_stats(dir: &Path, hide_gitkeep: bool) -> DirStats {
+fn file_stats(path: PathBuf) -> Option<(SystemTime, FileEntry)> {
+    let metadata = fs::symlink_metadata(&path)
+        .ok()
+        .filter(fs::Metadata::is_file)?;
+    let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+    Some((
+        modified,
+        FileEntry {
+            name: path.file_name()?.to_string_lossy().into_owned(),
+            path,
+            size_bytes: metadata.len(),
+            size_mb: megabytes(metadata.len()),
+            modified_str: DateTime::<Local>::from(modified)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        },
+    ))
+}
+
+fn dir_stats(dir: &Path, hide_gitkeep: bool, include_previews: bool) -> DirStats {
     let mut files: Vec<(SystemTime, FileEntry)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -67,22 +86,16 @@ fn dir_stats(dir: &Path, hide_gitkeep: bool) -> DirStats {
             if hide_gitkeep && is_gitkeep(&entry.path()) {
                 return None;
             }
-            let metadata = entry.metadata().ok().filter(fs::Metadata::is_file)?;
-            let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
-            Some((
-                modified,
-                FileEntry {
-                    name: entry.file_name().to_string_lossy().into_owned(),
-                    path: entry.path(),
-                    size_bytes: metadata.len(),
-                    size_mb: megabytes(metadata.len()),
-                    modified_str: DateTime::<Local>::from(modified)
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string(),
-                },
-            ))
+            file_stats(entry.path())
         })
         .collect();
+    if include_previews {
+        files.extend(
+            managed_preview_files(dir)
+                .into_iter()
+                .filter_map(file_stats),
+        );
+    }
     files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
 
     let size_bytes = files.iter().map(|(_, file)| file.size_bytes).sum();
@@ -95,13 +108,31 @@ fn dir_stats(dir: &Path, hide_gitkeep: bool) -> DirStats {
 }
 
 pub fn stats(paths: &AppPaths) -> StorageStats {
-    let temp = dir_stats(&paths.temp, false);
-    let outputs = dir_stats(&paths.outputs, true);
+    let temp = dir_stats(&paths.temp, false, true);
+    let mut outputs = DirStats::default();
+    let mut pending = vec![paths.outputs.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() && !is_gitkeep(&entry.path()) {
+                if let Some((_, file)) = file_stats(entry.path()) {
+                    outputs.size_bytes += file.size_bytes;
+                    outputs.files.push(file);
+                }
+            }
+        }
+    }
+    outputs.count = outputs.files.len();
+    outputs.size_mb = megabytes(outputs.size_bytes);
     let total_app_mb = megabytes(temp.size_bytes + outputs.size_bytes);
     StorageStats {
         temp,
         outputs,
-        models: dir_stats(&paths.models, false),
+        models: dir_stats(&paths.models, false, false),
         total_app_mb,
     }
 }
@@ -158,6 +189,20 @@ pub fn delete_file(paths: &AppPaths, file: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_stats_include_nested_batch_results() {
+        let root = std::env::temp_dir().join(format!("nested-output-{}", uuid::Uuid::new_v4()));
+        let paths = crate::config::AppPaths::new(&root, root.join("effects")).unwrap();
+        let nested = paths.outputs.join("Batch_001/01_abc123");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("video_abc123.mp4"), [0_u8; 1024]).unwrap();
+        std::fs::write(nested.join("thumbnail_abc123.jpg"), [0_u8; 512]).unwrap();
+        let result = super::stats(&paths);
+        assert_eq!(result.outputs.count, 2);
+        assert_eq!(result.outputs.size_bytes, 1536);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
 
     fn temp_paths(label: &str) -> AppPaths {
@@ -233,6 +278,65 @@ mod tests {
         let stats = stats(&paths);
         assert_eq!(stats.outputs.count, 1);
         assert_eq!(stats.outputs.size_bytes, 2048);
+        let _ = fs::remove_dir_all(&paths.data_dir);
+    }
+
+    #[test]
+    fn temp_stats_include_managed_previews_without_counting_markers_or_unknown_folders() {
+        use crate::karaoke::preview::PreviewSession;
+
+        let paths = temp_paths("preview-stats");
+        let session = PreviewSession::new(&paths.temp).unwrap();
+        let preview = session.create_file();
+        fs::write(preview.path(), vec![0_u8; 4096]).unwrap();
+        fs::write(paths.temp.join("render.ass"), vec![0_u8; 1024]).unwrap();
+        let unrelated = paths.temp.join("unrelated-cache");
+        fs::create_dir(&unrelated).unwrap();
+        fs::write(unrelated.join("keep.wav"), vec![0_u8; 8192]).unwrap();
+        fs::write(
+            session.directory().join("keep.txt"),
+            b"not an audio preview",
+        )
+        .unwrap();
+
+        let temp = stats(&paths).temp;
+        assert_eq!(temp.count, 2);
+        assert_eq!(temp.size_bytes, 5120);
+        assert!(temp.files.iter().any(|file| file.path == preview.path()));
+        assert!(temp.files.iter().all(|file| file.name != ".lock"));
+
+        drop(preview);
+        let temp = stats(&paths).temp;
+        assert_eq!(temp.count, 1);
+        assert_eq!(temp.size_bytes, 1024);
+        assert!(unrelated.join("keep.wav").is_file());
+        fs::remove_file(session.directory().join("keep.txt")).unwrap();
+        drop(session);
+        let _ = fs::remove_dir_all(&paths.data_dir);
+    }
+
+    #[test]
+    fn normal_temp_cleanup_preserves_owned_preview_until_track_releases_it() {
+        use crate::karaoke::preview::PreviewSession;
+
+        let paths = temp_paths("preview-cleanup");
+        let session = PreviewSession::new(&paths.temp).unwrap();
+        let preview = session.create_file();
+        fs::write(preview.path(), b"active audio").unwrap();
+        fs::write(paths.temp.join("old.ass"), b"render intermediate").unwrap();
+        let counts = cleanup(
+            &paths,
+            &CleanupOptions {
+                clean_temp: true,
+                ..CleanupOptions::default()
+            },
+        );
+        assert_eq!(counts.temp, 1);
+        assert!(preview.path().is_file());
+        assert_eq!(stats(&paths).temp.count, 1);
+        drop(preview);
+        assert_eq!(stats(&paths).temp.count, 0);
+        drop(session);
         let _ = fs::remove_dir_all(&paths.data_dir);
     }
 

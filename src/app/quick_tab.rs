@@ -18,20 +18,7 @@ use super::{
 
 impl StudioApp {
     pub(super) fn quick_tab(&mut self, ui: &mut egui::Ui) {
-        ui.vertical(|ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.page_title("Render Old");
-                ui.space2();
-                ui.text_colored(
-                    "— Audio/Video Merger & Playlist Generator",
-                    TextSize::Md,
-                    TextColor::Accent,
-                );
-            });
-            ui.muted_label(
-                "Masukkan video/gambar dan lagu di sisi kiri, pantau pratinjau di sisi kanan, lalu tekan tombol render.",
-            );
-        });
+        theme::page_header(ui, "Render Old", "Masukkan video/gambar dan lagu di sisi kiri, pantau preview di sisi kanan, lalu tekan tombol render.");
         ui.space_group();
         ui.separator();
         ui.space_group();

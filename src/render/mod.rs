@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod batch;
 pub mod effects;
 pub mod encoder;
 pub mod graph;
@@ -28,7 +29,7 @@ use crate::{
 use effects::AppliedEffect;
 use encoder::Encoder;
 use image_video::{estimate_tempo_bpm, ImageVideo, DEFAULT_BPM};
-use job::{JobHandle, JobStatus};
+use job::{JobHandle, JobStatus, RenderStage, RenderTimings};
 pub use looper::VisualVariationMode;
 use looper::{resolve_visual_variation, LoopRender, VisualVariation};
 use request::RenderRequest;
@@ -85,13 +86,20 @@ impl Drop for TempFiles {
     }
 }
 
-/// Everything a simple Generate render needs: a looping video and music tracks.
+/// A snapshot of the editor settings used to create a Generate bundle thumbnail.
+#[derive(Debug, Clone)]
+pub struct AutoThumbnailRequest {
+    pub spec: crate::thumbnail::ThumbnailSpec,
+    pub timestamp: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SimpleRenderRequest {
     pub video_path: PathBuf,
     pub audio_files: Vec<PathBuf>,
     pub track_titles: Vec<String>,
     pub thumbnail_path: Option<PathBuf>,
+    pub auto_thumbnail: Option<AutoThumbnailRequest>,
     pub output_dir: PathBuf,
     pub size: (u32, u32),
     pub fps: u32,
@@ -103,6 +111,7 @@ pub struct SimpleRenderRequest {
     pub youtube_standard: bool,
     pub visual_mode: VisualVariationMode,
     pub anti_duplicate: bool,
+    pub output_code: Option<String>,
     pub pre_resolved_stamp: Option<AntiDuplicateStamp>,
     pub fade_out_secs: f64,
     pub crossfade_secs: f64,
@@ -112,6 +121,7 @@ pub struct SimpleRenderRequest {
 
 /// Runs a render job to completion and records the outcome on `job`.
 pub async fn execute(context: &RenderContext, job: &JobHandle, request: RenderRequest) {
+    job.start_timing();
     if let Err(error) = run_pipeline(context, job, request).await {
         job.update(|job| job.fail(error.to_string()));
     }
@@ -123,6 +133,7 @@ pub async fn execute_simple(
     job: &JobHandle,
     request: SimpleRenderRequest,
 ) {
+    job.start_timing();
     if let Err(error) = run_simple_pipeline(context, job, request).await {
         job.update(|job| job.fail(error.to_string()));
     }
@@ -303,6 +314,8 @@ async fn run_simple_pipeline(
                 base_output_dir: request.output_dir,
                 track_titles: request.track_titles,
                 thumbnail_path: request.thumbnail_path,
+                auto_thumbnail: request.auto_thumbnail,
+                output_code: request.output_code,
             }),
             duration_fallback: request.target_duration_secs.unwrap_or(0.0),
             subtitle_file: None,
@@ -340,9 +353,68 @@ fn normalize_video_size(size: (u32, u32)) -> (u32, u32) {
 }
 
 struct GenerateBundle {
+    output_code: Option<String>,
     base_output_dir: PathBuf,
     track_titles: Vec<String>,
     thumbnail_path: Option<PathBuf>,
+    auto_thumbnail: Option<AutoThumbnailRequest>,
+}
+
+struct RenderReport<'a> {
+    encoder: &'a str,
+    preset: &'a str,
+    size: (u32, u32),
+    fps: u32,
+    duration: f64,
+    stream_copy: bool,
+    normalize_volume: bool,
+    visual_label: &'a str,
+    timings: &'a RenderTimings,
+}
+
+fn format_render_report(report: &RenderReport<'_>) -> String {
+    let realtime = if report.timings.video_seconds > 0.0 {
+        format!("{:.2}x", report.duration / report.timings.video_seconds)
+    } else {
+        "Belum terukur".to_owned()
+    };
+    let mode = if report.stream_copy {
+        "Salin video langsung"
+    } else {
+        "Encode ulang"
+    };
+    let preset = if report.stream_copy {
+        "Tidak digunakan"
+    } else {
+        report.preset
+    };
+    let normalize = if report.normalize_volume {
+        "Aktif"
+    } else {
+        "Off"
+    };
+    format!(
+        "LoopKaraoke Studio v{} - Laporan Render\n\
+         Mode: {mode}\nEncoder aktual: {}\nPreset aktual: {preset}\n\
+         Resolusi tujuan: {}x{}\nFPS tujuan: {}\nDurasi hasil: {:.3} detik\n\
+         Normalisasi audio: {normalize}\nVariasi visual: {}\n\n\
+         Waktu persiapan: {:.3} detik\nWaktu audio: {:.3} detik\n\
+         Waktu video: {:.3} detik\nWaktu penyimpanan hasil: {:.3} detik\n\
+         Total waktu: {:.3} detik\nKecepatan tahap video: {realtime}\n\n\
+         Waktu di atas tidak mencakup penulisan laporan ini.\n",
+        env!("CARGO_PKG_VERSION"),
+        report.encoder,
+        report.size.0,
+        report.size.1,
+        report.fps,
+        report.duration,
+        report.visual_label,
+        report.timings.preparation_seconds,
+        report.timings.audio_seconds,
+        report.timings.video_seconds,
+        report.timings.finalizing_seconds,
+        report.timings.total_elapsed_seconds,
+    )
 }
 
 struct MergeAndRender<'a> {
@@ -433,6 +505,7 @@ async fn merge_and_render(
 
     let master_audio = paths.temp.join(format!("master_audio_{}.m4a", job.id()));
     temp.track(&master_audio);
+    job.set_stage(RenderStage::Audio);
     let merged = audio::merge_tracks_detailed(
         tools,
         params.audio_files,
@@ -447,6 +520,7 @@ async fn merge_and_render(
         params.generate_bundle.is_some(),
     )
     .await?;
+    job.set_stage(RenderStage::Preparing);
     let duration = if merged.duration > 0.0 {
         merged.duration
     } else {
@@ -455,7 +529,14 @@ async fn merge_and_render(
 
     let (output_path, bundle_outputs) = if let Some(bundle) = params.generate_bundle {
         let render_dir = create_unique_render_dir(&bundle.base_output_dir).await?;
-        let output = render_dir.join(unique_video_filename(&render_dir));
+        let filename = match bundle.output_code {
+            Some(code) if code.len() == 6 && code.bytes().all(|c| c.is_ascii_alphanumeric()) => {
+                format!("video_{code}.mp4")
+            }
+            Some(_) => return Err(Error::invalid("Kode nama keluaran tidak valid")),
+            None => unique_video_filename(&render_dir),
+        };
+        let output = render_dir.join(filename);
         let raw_titles = resolve_raw_titles(params.audio_files, &bundle.track_titles);
         let chapters = build_timed_chapters(
             &raw_titles,
@@ -481,6 +562,7 @@ async fn merge_and_render(
                 timestamp_txt,
                 bundle.thumbnail_path,
                 ffmeta_file,
+                bundle.auto_thumbnail,
             )),
         )
     } else {
@@ -491,6 +573,11 @@ async fn merge_and_render(
     };
 
     let encoder = Encoder::resolve(params.encoder, hardware);
+    let resolved_preset = if encoder.presets().contains(&params.preset) {
+        params.preset
+    } else {
+        encoder.default_preset()
+    };
     let encoder_label = if params.stream_copy_video {
         "Stream Copy (Kualitas Asli)".to_owned()
     } else {
@@ -508,9 +595,10 @@ async fn merge_and_render(
 
     let chapters_file = bundle_outputs
         .as_ref()
-        .and_then(|(_, _, _, _, ffmeta)| ffmeta.as_deref());
+        .and_then(|(_, _, _, _, ffmeta, _)| ffmeta.as_deref());
 
     let effect = AppliedEffect::resolve(params.effect_id, &paths.effects);
+    job.set_stage(RenderStage::Video);
     let render_res = LoopRender {
         tools,
         video: params.video,
@@ -525,7 +613,7 @@ async fn merge_and_render(
         fps: params.fps,
         effect: &effect,
         encoder,
-        preset: params.preset,
+        preset: resolved_preset,
         quality: params.quality,
         stream_copy_video: params.stream_copy_video,
         youtube_standard: params.youtube_standard,
@@ -536,6 +624,7 @@ async fn merge_and_render(
     }
     .run(job)
     .await;
+    job.set_stage(RenderStage::Finalizing);
 
     if let Err(error) = render_res {
         let _ = fs::remove_file(&output_path);
@@ -545,19 +634,62 @@ async fn merge_and_render(
         return Err(error);
     }
 
-    if let Some((render_dir, playlist_txt, timestamp_txt, thumbnail_path, _)) = bundle_outputs {
+    let report_dir = bundle_outputs
+        .as_ref()
+        .map(|(directory, ..)| directory.clone());
+    if let Some((render_dir, playlist_txt, timestamp_txt, thumbnail_path, _, auto_thumbnail)) =
+        bundle_outputs
+    {
         tokio::fs::write(render_dir.join("playlist.txt"), playlist_txt).await?;
         tokio::fs::write(render_dir.join("Timestamp.txt"), timestamp_txt).await?;
-        if let Some(thumb_src) = thumbnail_path.filter(|p| p.is_file()) {
-            if let Some(name) = thumb_src.file_name() {
-                let dest = render_dir.join(name);
-                if dest != thumb_src {
-                    tokio::fs::copy(&thumb_src, &dest).await?;
-                }
+        if let Some(automatic) = auto_thumbnail {
+            let thumbnail_output =
+                thumbnail_path_for_video(&output_path, std::ffi::OsStr::new("jpg"));
+            let source_timing = crate::media::probe_video(tools, params.video)
+                .await
+                .ok()
+                .map(|video| (video.duration, video.fps));
+            let timestamp = thumbnail_timestamp(automatic.timestamp, source_timing);
+            if let Err(error) = crate::thumbnail::render(
+                tools,
+                &paths.temp,
+                params.video,
+                timestamp,
+                automatic.spec,
+                thumbnail_output.clone(),
+            )
+            .await
+            {
+                let _ = tokio::fs::remove_file(&thumbnail_output).await;
+                append_report_warning(job, format!("Thumbnail otomatis gagal dibuat: {error}"));
+            }
+        } else if let Some(thumb_src) = thumbnail_path.filter(|p| p.is_file()) {
+            let extension = thumb_src.extension().unwrap_or(std::ffi::OsStr::new("jpg"));
+            let dest = thumbnail_path_for_video(&output_path, extension);
+            if dest != thumb_src {
+                tokio::fs::copy(&thumb_src, &dest).await?;
             }
         }
     }
 
+    job.set_stage(RenderStage::Completed);
+    if let Some(directory) = report_dir {
+        let snapshot = job.snapshot();
+        let report = format_render_report(&RenderReport {
+            encoder: &snapshot.encoder_name,
+            preset: resolved_preset,
+            size: params.size,
+            fps: params.fps,
+            duration,
+            stream_copy: params.stream_copy_video,
+            normalize_volume: params.normalize_volume,
+            visual_label: snapshot.visual_label.as_deref().unwrap_or("Tanpa"),
+            timings: &snapshot.timings,
+        });
+        if let Err(error) = tokio::fs::write(directory.join("render_report.txt"), report).await {
+            append_report_warning(job, format!("Laporan render gagal disimpan: {error}"));
+        }
+    }
     job.update(|job| {
         job.status = JobStatus::Completed;
         job.progress_percent = 100.0;
@@ -566,6 +698,45 @@ async fn merge_and_render(
         job.output_file = Some(output_path);
     });
     Ok(())
+}
+
+fn thumbnail_path_for_video(video: &Path, extension: &std::ffi::OsStr) -> PathBuf {
+    let stem = video.file_stem().unwrap_or_default().to_string_lossy();
+    let code = stem.strip_prefix("video_").unwrap_or(&stem);
+    let mut output = video.with_file_name(format!("thumbnail_{code}"));
+    output.set_extension(extension);
+    output
+}
+
+fn thumbnail_timestamp(timestamp: f64, source_timing: Option<(f64, f64)>) -> f64 {
+    let timestamp = if timestamp.is_finite() {
+        timestamp.max(0.0)
+    } else {
+        0.0
+    };
+    match source_timing.filter(|(duration, _)| duration.is_finite() && *duration > 0.0) {
+        // The exact duration is EOF, not a readable frame position.
+        Some((duration, fps)) => {
+            let frame_duration = if fps.is_finite() && fps > 0.0 {
+                1.0 / fps
+            } else {
+                0.1
+            };
+            timestamp.min((duration - frame_duration).max(0.0))
+        }
+        None => timestamp,
+    }
+}
+
+fn append_report_warning(job: &JobHandle, warning: String) {
+    job.update(|job| {
+        if let Some(previous) = &mut job.report_warning {
+            previous.push('\n');
+            previous.push_str(&warning);
+        } else {
+            job.report_warning = Some(warning);
+        }
+    });
 }
 
 /// Image backgrounds are regenerated to match the playlist tempo and the chosen effect.
@@ -618,9 +789,77 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        build_anti_duplicate_stamp, normalize_video_size, resolve_raw_titles,
-        unique_video_filename, VisualVariation, VisualVariationMode,
+        append_report_warning, build_anti_duplicate_stamp, format_render_report,
+        normalize_video_size, resolve_raw_titles, thumbnail_path_for_video, thumbnail_timestamp,
+        unique_video_filename, RenderReport, RenderTimings, VisualVariation, VisualVariationMode,
     };
+
+    #[test]
+    fn thumbnail_filename_shares_the_video_code_and_preserves_image_format() {
+        let video = std::path::Path::new("output/video_a1b2c3.mp4");
+        for extension in ["jpg", "png", "webp"] {
+            assert_eq!(
+                thumbnail_path_for_video(video, std::ffi::OsStr::new(extension)),
+                std::path::PathBuf::from(format!("output/thumbnail_a1b2c3.{extension}"))
+            );
+        }
+    }
+
+    #[test]
+    fn thumbnail_seek_avoids_eof_and_invalid_times() {
+        assert_eq!(thumbnail_timestamp(f64::NAN, Some((10.0, 10.0))), 0.0);
+        assert_eq!(thumbnail_timestamp(-1.0, Some((10.0, 10.0))), 0.0);
+        assert_eq!(thumbnail_timestamp(f64::INFINITY, Some((10.0, 10.0))), 0.0);
+        assert_eq!(thumbnail_timestamp(10.0, Some((10.0, 10.0))), 9.9);
+        assert_eq!(thumbnail_timestamp(10.0, Some((10.0, 1.0))), 9.0);
+        assert_eq!(thumbnail_timestamp(10.0, Some((10.0, f64::NAN))), 9.9);
+        assert_eq!(thumbnail_timestamp(999.0, Some((0.05, 10.0))), 0.0);
+        assert_eq!(thumbnail_timestamp(3.5, None), 3.5);
+        assert_eq!(thumbnail_timestamp(3.5, Some((f64::NAN, 10.0))), 3.5);
+    }
+
+    #[test]
+    fn finalization_warnings_preserve_all_failures() {
+        let job = super::JobHandle::new();
+        append_report_warning(&job, "Thumbnail otomatis gagal dibuat".into());
+        append_report_warning(&job, "Laporan render gagal disimpan".into());
+        assert_eq!(
+            job.snapshot().report_warning.as_deref(),
+            Some("Thumbnail otomatis gagal dibuat\nLaporan render gagal disimpan")
+        );
+    }
+
+    #[test]
+    fn render_report_explains_actual_encoder_timings_and_copy_mode() {
+        let timings = RenderTimings {
+            preparation_seconds: 1.0,
+            audio_seconds: 3.0,
+            video_seconds: 10.0,
+            finalizing_seconds: 2.0,
+            total_elapsed_seconds: 16.0,
+        };
+        let mut report = RenderReport {
+            encoder: "NVIDIA NVENC H.264 (GPU)",
+            preset: "p5",
+            size: (1920, 1080),
+            fps: 30,
+            duration: 100.0,
+            stream_copy: false,
+            normalize_volume: true,
+            visual_label: "Geser pelan",
+            timings: &timings,
+        };
+        let text = format_render_report(&report);
+        assert!(text.contains("Encoder aktual: NVIDIA NVENC H.264 (GPU)"));
+        assert!(text.contains("Preset aktual: p5"));
+        assert!(text.contains("Waktu audio: 3.000 detik"));
+        assert!(text.contains("Total waktu: 16.000 detik"));
+        assert!(text.contains("Kecepatan tahap video: 10.00x"));
+        report.stream_copy = true;
+        let text = format_render_report(&report);
+        assert!(text.contains("Mode: Salin video langsung"));
+        assert!(text.contains("Preset aktual: Tidak digunakan"));
+    }
 
     #[test]
     fn normalizes_source_video_dimensions_to_even() {

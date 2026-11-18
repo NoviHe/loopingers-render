@@ -19,13 +19,14 @@ use super::{
 const EXAMPLE_TITLE: &str = "Lorem Ipsum";
 const EXAMPLE_SUBTITLE: &str = "Dolor Sit Amet";
 
-const NUMBER_STYLES: [(&str, &str); 3] = [
+pub(super) const NUMBER_STYLES: [(&str, &str); 3] = [
     ("mirrored", "Cermin"),
     ("sequential", "Berurutan"),
     ("mirrored_sequential", "Cermin Berurutan"),
 ];
 
-const COLUMN_MODES: [(&str, &str); 3] = [("auto", "Otomatis"), ("1", "1 kolom"), ("2", "2 kolom")];
+pub(super) const COLUMN_MODES: [(&str, &str); 3] =
+    [("auto", "Otomatis"), ("1", "1 kolom"), ("2", "2 kolom")];
 
 pub struct FontChoice {
     pub id: &'static str,
@@ -141,6 +142,7 @@ pub const DEMO_TRACKS: [&str; 19] = [
     "Excepteur Sint Occaecat",
 ];
 
+#[derive(Clone)]
 pub struct ThumbnailState {
     pub title: String,
     pub subtitle: String,
@@ -389,19 +391,19 @@ impl StudioApp {
     }
 
     pub(super) fn thumbnail_tab(&mut self, ui: &mut egui::Ui) {
+        let can_pin = Self::karaoke_has_wide_layout(ui);
+        let pinned = can_pin && self.thumbnail_preview_pinned;
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.page_title("Thumbnail");
-        ui.muted_label(
-            "Buat thumbnail mandiri dari gambar Anda atau gunakan video dan playlist Generate. Ekspor JPG Full HD.",
-        )
+        theme::page_header(ui, "Thumbnail", "Buat thumbnail mandiri dari gambar Anda atau gunakan video dan playlist Generate. Ekspor JPG Full HD.")
         .on_hover_text(help::HEADING);
         ui.add_space(4.0);
         generate_card(ui, |ui| {
-            card_header(
+            super::generate_tab::pinnable_card_header(
                 ui,
                 GenerateIcon::Sliders,
                 "Editor Thumbnail",
                 "Teks, daftar lagu, dan latar dalam satu preview.",
+                can_pin.then_some(&mut self.thumbnail_preview_pinned),
             );
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -446,11 +448,21 @@ impl StudioApp {
                 });
             }
             ui.muted_label("Gambar unggahan dipakai terlebih dahulu. Jika tidak ada, latar otomatis memakai video Generate. Daftar lagu mengikuti Playlist.");
+            if self.auto_generate_thumbnail {
+                ui.muted_label("Auto Thumbnail Generate aktif: hasil render memakai frame video dan urutan lagu Generate, dengan desain dari halaman ini.");
+            }
             ui.muted_label("Opsi “Tampilkan di Video” hanya berlaku untuk Render Old; sumber thumbnail tetap gambar unggahan atau video Generate.");
         });
         if ui.available_width() >= 1080.0 {
             ui.columns(2, |columns| {
-                self.thumbnail_fields(&mut columns[0]);
+                super::generate_tab::pinned_content(
+                    &mut columns[0],
+                    pinned,
+                    "thumbnail_scroll",
+                    |ui| {
+                        self.thumbnail_fields(ui);
+                    },
+                );
                 self.thumbnail_output(&mut columns[1]);
             });
         } else {
@@ -851,8 +863,31 @@ impl StudioApp {
     }
 
     pub(super) fn build_thumbnail_spec(&self, for_video: bool) -> ThumbnailSpec {
+        self.build_thumbnail_spec_for_source(for_video, self.thumbnail_uses_generate())
+    }
+
+    pub(super) fn build_generate_thumbnail_spec(&self) -> ThumbnailSpec {
+        self.build_thumbnail_spec_for_source(false, true)
+    }
+
+    pub(super) fn build_batch_thumbnail_spec(&self, titles: &[String]) -> ThumbnailSpec {
+        let mut spec = self.build_generate_thumbnail_spec();
+        spec.track_titles = titles.to_vec();
+        spec.title = thumbnail_title(
+            &self.thumbnail.title,
+            self.thumbnail.use_first_title,
+            titles.first().map(String::as_str),
+        );
+        spec
+    }
+
+    fn build_thumbnail_spec_for_source(
+        &self,
+        for_video: bool,
+        uses_generate: bool,
+    ) -> ThumbnailSpec {
         let state = &self.thumbnail;
-        let titles = if self.thumbnail_uses_generate() {
+        let titles = if uses_generate {
             self.generate
                 .tracks
                 .iter()
@@ -880,7 +915,7 @@ impl StudioApp {
                 thumbnail_title(
                     &state.title,
                     state.use_first_title,
-                    if self.thumbnail_uses_generate() {
+                    if uses_generate {
                         self.generate
                             .tracks
                             .first()
@@ -1052,7 +1087,16 @@ impl StudioApp {
     }
 
     pub(super) fn thumbnail_uses_generate(&self) -> bool {
-        matches!(self.tab, Tab::Thumbnail | Tab::Karaoke)
+        matches!(self.tab, Tab::Thumbnail | Tab::Karaoke | Tab::Visualizer)
+    }
+
+    pub(super) fn open_generate_thumbnail_settings(&mut self) {
+        self.thumbnail.manual_image = None;
+        self.thumbnail.result = None;
+        self.tab = Tab::Thumbnail;
+        if self.generate.video.is_some() && self.ffmpeg_ready {
+            self.extract_thumbnail_frame();
+        }
     }
 
     fn thumbnail_source(&self) -> Option<(PathBuf, bool, f64)> {

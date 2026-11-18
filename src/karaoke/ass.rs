@@ -92,6 +92,15 @@ impl TracklistPosition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntroBanner {
+    pub font: String,
+    pub size: u32,
+    pub color: [u8; 3],
+    pub x: f32,
+    pub y: f32,
+}
+
 /// Subtitle options as sent by the UI; every field falls back to a default when absent.
 #[derive(Debug, Default, Clone)]
 pub struct StyleConfig {
@@ -107,6 +116,7 @@ pub struct StyleConfig {
     pub pos_x: Option<f32>,
     pub pos_y: Option<f32>,
     pub show_intro: Option<bool>,
+    pub intro_banner: Option<IntroBanner>,
     pub wipe_mode: Option<String>,
     pub show_lyrics: Option<bool>,
     pub show_tracklist: Option<bool>,
@@ -129,6 +139,7 @@ pub struct AssStyle {
     pos_x: Option<f32>,
     pos_y: Option<f32>,
     show_intro: bool,
+    intro_banner: Option<IntroBanner>,
     smooth_wipe: bool,
     show_lyrics: bool,
     show_tracklist: bool,
@@ -157,6 +168,7 @@ impl AssStyle {
             pos_x: config.pos_x,
             pos_y: config.pos_y,
             show_intro: config.show_intro.unwrap_or(true),
+            intro_banner: config.intro_banner.clone(),
             smooth_wipe: config.wipe_mode.as_deref().unwrap_or("smooth") == "smooth",
             show_lyrics: config.show_lyrics.unwrap_or(true),
             show_tracklist: config.show_tracklist.unwrap_or(false),
@@ -370,7 +382,34 @@ pub fn build_ass(tracks: &[SubtitleTrack], width: u32, height: u32, style: &AssS
         if style.show_tracklist && track.duration > 0.0 {
             script.push_str(&tracklist_event(tracks, idx, offset, style));
             script.push('\n');
-        } else if style.show_intro && track.duration > INTRO_MIN_TRACK_SECONDS {
+        }
+        if let Some(banner) = style
+            .intro_banner
+            .as_ref()
+            .filter(|_| style.show_intro && track.duration > 0.0)
+        {
+            let x = (width as f32 * banner.x.clamp(0.0, 100.0) / 100.0).round();
+            let y = (height as f32 * banner.y.clamp(0.0, 100.0) / 100.0).round();
+            let [r, g, b] = banner.color;
+            let font = escape_text(&banner.font);
+            let size = banner.size;
+            let mut text = escape_text(&track.title);
+            if !track.artist.trim().is_empty() && !track.artist.eq_ignore_ascii_case(&track.title) {
+                text.push_str(&format!(
+                    "\\N{{\\fs{}}}{}",
+                    size * 65 / 100,
+                    escape_text(&track.artist)
+                ));
+            }
+            let start = ass_time(offset);
+            let end = ass_time(offset + track.duration.min(5.0));
+            script.push_str(&format!(
+                "Dialogue: 1,{start},{end},SongTitle,,0,0,0,,{{\\an5\\pos({x},{y})\\fn{font}\\fs{size}\\c&H{b:02X}{g:02X}{r:02X}&}}{text}\n"
+            ));
+        } else if !style.show_tracklist
+            && style.show_intro
+            && track.duration > INTRO_MIN_TRACK_SECONDS
+        {
             script.push_str(&intro_event(track, offset, style.font_size));
             script.push('\n');
         }

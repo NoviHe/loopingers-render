@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, path::PathBuf, time::Duration};
+use std::{collections::HashMap, f32::consts::PI, path::PathBuf, time::Duration};
 
 use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, FontId, Layout, Pos2, Rect, Sense, Shape,
@@ -6,13 +6,14 @@ use eframe::egui::{
 };
 use loopkaraoke::{
     config::GenerateAdvancedSettings,
+    karaoke::preview::{PreviewFile, PreviewSession},
     media::{probe_audio, probe_video, AudioInfo, VideoInfo, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS},
     render::{
         self, build_anti_duplicate_stamp,
         encoder::VideoTarget,
         job::{JobHandle, JobStatus},
         looper::VisualVariation,
-        RenderContext, SimpleRenderRequest, VisualVariationMode,
+        AutoThumbnailRequest, RenderContext, SimpleRenderRequest, VisualVariationMode,
     },
     util::open_path,
 };
@@ -44,6 +45,7 @@ pub(crate) struct GenerateTrack {
     pub id: u32,
     pub path: PathBuf,
     pub title: String,
+    pub artist: String,
     pub duration: f64,
     pub lrc: Option<(PathBuf, usize)>,
 }
@@ -58,6 +60,8 @@ pub(crate) struct GenerateState {
     pub job_reported: bool,
     pub dragging_track_idx: Option<usize>,
     pub loading_preview_id: Option<u32>,
+    pub preview_request_id: u64,
+    pub previews: HashMap<u32, PreviewFile>,
     pub playing_track_id: Option<u32>,
     pub preview_volume: f32,
     pub volume_popup_open: bool,
@@ -84,6 +88,8 @@ impl Default for GenerateState {
             job_reported: false,
             dragging_track_idx: None,
             loading_preview_id: None,
+            preview_request_id: 0,
+            previews: HashMap::new(),
             playing_track_id: None,
             preview_volume: 100.0,
             volume_popup_open: false,
@@ -101,6 +107,22 @@ impl Default for GenerateState {
 }
 
 impl GenerateState {
+    fn remove_audio(&mut self, index: usize) {
+        let track = self.tracks.remove(index);
+        self.previews.remove(&track.id);
+    }
+
+    fn clear_audio(&mut self) {
+        self.previews.clear();
+        self.tracks.clear();
+    }
+
+    pub(super) fn preview_request_matches(&self, track_id: u32, request_id: u64) -> bool {
+        self.loading_preview_id == Some(track_id)
+            && self.preview_request_id == request_id
+            && self.tracks.iter().any(|track| track.id == track_id)
+    }
+
     pub fn push_audio(&mut self, info: AudioInfo) {
         let id = self.next_track_id;
         self.next_track_id += 1;
@@ -116,6 +138,7 @@ impl GenerateState {
             id,
             path,
             title,
+            artist: info.artist,
             duration: info.duration,
             lrc,
         });
@@ -133,6 +156,7 @@ impl GenerateState {
             .unwrap_or(0.0)
             .clamp(0.0, MAX_CROSSFADE_SECS);
         Self {
+            advanced_open: saved.advanced_open,
             fade_out_secs,
             crossfade_secs,
             manual_loop_duration: saved.manual_loop_duration.clone(),
@@ -149,6 +173,7 @@ impl GenerateState {
 
     pub fn to_settings(&self) -> GenerateAdvancedSettings {
         GenerateAdvancedSettings {
+            advanced_open: self.advanced_open,
             fade_out_secs: format_secs_setting(self.fade_out_secs),
             crossfade_secs: format_secs_setting(self.crossfade_secs),
             manual_loop_duration: self.manual_loop_duration.clone(),
@@ -161,14 +186,15 @@ impl GenerateState {
     }
 
     fn reset_advanced(&mut self) {
-        self.fade_out_secs = 0.0;
-        self.crossfade_secs = 0.0;
-        self.manual_loop_duration.clear();
-        self.resolution_idx = 0;
-        self.audio_bitrate_idx = 1;
-        self.visual_variation_idx = 0;
-        self.volume_norm_idx = 1;
-        self.anti_duplicate_idx = 0;
+        let defaults = Self::from_settings(&GenerateAdvancedSettings::default());
+        self.fade_out_secs = defaults.fade_out_secs;
+        self.crossfade_secs = defaults.crossfade_secs;
+        self.manual_loop_duration = defaults.manual_loop_duration;
+        self.resolution_idx = defaults.resolution_idx;
+        self.audio_bitrate_idx = defaults.audio_bitrate_idx;
+        self.visual_variation_idx = defaults.visual_variation_idx;
+        self.volume_norm_idx = defaults.volume_norm_idx;
+        self.anti_duplicate_idx = defaults.anti_duplicate_idx;
     }
 
     fn summary_text(&self, yt_standard: bool) -> String {
@@ -241,6 +267,7 @@ pub(super) enum GenerateIcon {
     ChevronUp,
     ChevronDown,
     Reset,
+    Pin,
 }
 
 enum PlaylistRowAction {
@@ -254,14 +281,12 @@ impl StudioApp {
     pub(super) fn generate_tab(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 8.0;
 
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.page_title("Generate");
-            ui.muted_label(
-                "Gabungkan video pendekmu dengan daftar lagu mu menjadi satu file video.",
-            );
-        });
-
+        theme::page_header(
+            ui,
+            "Generate",
+            "Gabungkan video pendekmu dengan daftar lagu mu menjadi satu file video.",
+        );
+        ui.add_space(4.0);
         self.generate_source_card(ui);
         self.generate_playlist_card(ui);
         self.generate_advanced_card(ui);
@@ -269,6 +294,8 @@ impl StudioApp {
     }
 
     fn generate_source_card(&mut self, ui: &mut egui::Ui) {
+        let previous_auto_thumbnail = self.auto_generate_thumbnail;
+        let mut open_thumbnail_settings = false;
         let mut pick_video = false;
         let mut pick_thumbnail = false;
         let mut clear_thumbnail = false;
@@ -341,15 +368,44 @@ impl StudioApp {
 
             ui.add_space(6.0);
 
-            // Section 2: Thumbnail (opsional, disalin ke folder output tiap render)
-            ui.muted_label("Thumbnail (opsional, disalin ke folder output tiap render)");
+            // Section 2: Lagu album (folder, beberapa folder, atau file sekaligus)
+            ui.muted_label("Lagu album (folder, beberapa folder, atau file sekaligus)");
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                if outline_icon_button(ui, GenerateIcon::Upload, "Pilih Thumbnail").clicked() {
-                    pick_thumbnail = true;
+            ui.horizontal_wrapped(|ui| {
+                if outline_icon_button(ui, GenerateIcon::Folder, "+ Folder Lagu").clicked() {
+                    pick_folders = true;
+                }
+                ui.add_space(2.0);
+                if outline_icon_button(ui, GenerateIcon::Music, "+ File Lagu").clicked() {
+                    pick_files = true;
                 }
                 ui.add_space(6.0);
-                if let Some((name, full_path)) = &thumbnail_info {
+                ui.muted_label("mp3 · wav · m4a · flac · ogg · opus, dll.");
+            });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.muted_label("Thumbnail (opsional, disimpan bersama hasil render)");
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                if self.auto_generate_thumbnail
+                    && outline_icon_button(ui, GenerateIcon::Sliders, "Thumbnail").clicked()
+                {
+                    open_thumbnail_settings = true;
+                }
+                if !self.auto_generate_thumbnail
+                    && outline_icon_button(ui, GenerateIcon::Upload, "Pilih Thumbnail").clicked()
+                {
+                    pick_thumbnail = true;
+                }
+                ui.toggle_value(&mut self.auto_generate_thumbnail, "Auto Thumbnail")
+                    .on_hover_text("Buat thumbnail otomatis memakai video, playlist, dan pengaturan Thumbnail.");
+                ui.add_space(6.0);
+                if self.auto_generate_thumbnail {
+                    ui.muted_label("Thumbnail untuk setting");
+                } else if let Some((name, full_path)) = &thumbnail_info {
                     let p = theme::Palette::of(ui.ctx());
                     ui.scope(|ui| {
                         ui.set_max_width((ui.available_width() - 36.0).max(60.0));
@@ -380,25 +436,6 @@ impl StudioApp {
             ui.separator();
             ui.add_space(4.0);
 
-            // Section 3: Lagu album (folder, beberapa folder, atau file sekaligus)
-            ui.muted_label("Lagu album (folder, beberapa folder, atau file sekaligus)");
-            ui.add_space(2.0);
-            ui.horizontal_wrapped(|ui| {
-                if outline_icon_button(ui, GenerateIcon::Folder, "+ Folder Lagu").clicked() {
-                    pick_folders = true;
-                }
-                ui.add_space(2.0);
-                if outline_icon_button(ui, GenerateIcon::Music, "+ File Lagu").clicked() {
-                    pick_files = true;
-                }
-                ui.add_space(6.0);
-                ui.muted_label("mp3 · wav · m4a · flac · ogg · opus, dll.");
-            });
-
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(4.0);
-
             // Section 4: Folder output
             ui.muted_label("Folder output");
             ui.add_space(2.0);
@@ -412,6 +449,9 @@ impl StudioApp {
             });
         });
 
+        if open_thumbnail_settings {
+            self.open_generate_thumbnail_settings();
+        }
         if pick_video {
             if !self.ffmpeg_ready {
                 self.warn("Menunggu FFmpeg siap sebelum mengimpor video.");
@@ -432,12 +472,16 @@ impl StudioApp {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
                 self.generate.thumbnail_path = Some(path);
+                self.auto_generate_thumbnail = false;
                 self.info(format!("Thumbnail dipilih: {name}"));
             }
         }
         if clear_thumbnail {
             self.generate.thumbnail_path = None;
             self.info("Thumbnail dihapus.");
+        }
+        if previous_auto_thumbnail != self.auto_generate_thumbnail {
+            self.save_settings();
         }
         if pick_folders {
             if !self.ffmpeg_ready {
@@ -700,7 +744,8 @@ impl StudioApp {
         }
         if clear_clicked {
             self.stop_generate_preview();
-            self.generate.tracks.clear();
+            self.generate.clear_audio();
+            self.storage = None;
             self.generate.dragging_track_idx = None;
             self.generate.volume_popup_open = false;
             self.info("Seluruh lagu di playlist dihapus.");
@@ -722,7 +767,8 @@ impl StudioApp {
                     self.stop_generate_preview();
                 }
                 let title = self.generate.tracks[idx].title.clone();
-                self.generate.tracks.remove(idx);
+                self.generate.remove_audio(idx);
+                self.storage = None;
                 if self.generate.tracks.is_empty() {
                     self.generate.volume_popup_open = false;
                 }
@@ -732,7 +778,8 @@ impl StudioApp {
         }
     }
 
-    fn stop_generate_preview(&mut self) {
+    pub(super) fn stop_generate_preview(&mut self) {
+        self.generate.preview_request_id = self.generate.preview_request_id.wrapping_add(1);
         self.generate.loading_preview_id = None;
         self.generate.playing_track_id = None;
         lyrics::win_audio::stop();
@@ -755,29 +802,54 @@ impl StudioApp {
         }
 
         let source = track.path.clone();
-        let tools = self.tools.clone();
-        let wav_out = self.paths.temp.join(format!("gen_preview_{track_id}.wav"));
-
+        self.stop_visualizer_playback(false);
+        self.lrc_studio.stop_playback();
         self.stop_generate_preview();
-        self.generate.loading_preview_id = Some(track_id);
-
-        self.spawn(async move {
-            let result = if wav_out.is_file() {
-                Ok(wav_out)
-            } else {
-                if let Some(parent) = wav_out.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+        if let Some(preview) = self.generate.previews.get(&track_id) {
+            if preview.path().is_file() {
+                lyrics::win_audio::play_from_with_volume(
+                    preview.path(),
+                    0.0,
+                    self.generate.preview_volume,
+                );
+                self.generate.playing_track_id = Some(track_id);
+                return;
+            }
+        }
+        self.generate.previews.remove(&track_id);
+        if self.audio_preview_session.is_none() {
+            match PreviewSession::new(&self.paths.temp) {
+                Ok(session) => self.audio_preview_session = Some(session),
+                Err(error) => {
+                    self.error(format!("Gagal menyiapkan preview Playlist: {error}"));
+                    return;
                 }
-                let mut cmd = tools.ffmpeg();
-                cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-                    .arg(&source)
-                    .args(["-vn", "-ac", "2", "-ar", "44100", "-acodec", "pcm_s16le"])
-                    .arg(&wav_out);
-                loopkaraoke::ffmpeg::run(&mut cmd, "FFmpeg (pratinjau audio)")
-                    .await
-                    .map(|_| wav_out)
-            };
-            Event::GeneratePreview { track_id, result }
+            }
+        }
+        let preview = self.audio_preview_session.as_ref().unwrap().create_file();
+        let tools = self.tools.clone();
+        self.generate.loading_preview_id = Some(track_id);
+        let request_id = self.generate.preview_request_id;
+        self.spawn(async move {
+            let mut command = tools.ffmpeg();
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+                .arg(&source)
+                .args(["-vn", "-ac", "2", "-ar", "44100", "-acodec", "pcm_s16le"])
+                .arg(preview.path());
+            let result =
+                match loopkaraoke::ffmpeg::run(&mut command, "FFmpeg (preview Playlist)").await {
+                    Ok(_) if preview.path().is_file() => Ok(preview),
+                    Ok(_) => Err(loopkaraoke::error::Error::internal(
+                        "File preview Playlist tidak terbentuk.",
+                    )),
+                    Err(error) => Err(error),
+                };
+            Event::GeneratePreview {
+                track_id,
+                request_id,
+                result,
+            }
         });
     }
 
@@ -896,6 +968,7 @@ impl StudioApp {
 
                 if header_resp.clicked() {
                     self.generate.advanced_open = !self.generate.advanced_open;
+                    self.save_settings();
                 }
 
                 if !self.generate.advanced_open {
@@ -1142,6 +1215,17 @@ impl StudioApp {
                             |p| format!("Render Generate selesai: {}", p.display()),
                         );
                         let mut detail_parts = Vec::new();
+                        detail_parts.push(format!(
+                            "{}; total {:.1}s; audio {:.1}s; video {:.1}s; finalisasi {:.1}s",
+                            snap.encoder_name,
+                            snap.timings.total_elapsed_seconds,
+                            snap.timings.audio_seconds,
+                            snap.timings.video_seconds,
+                            snap.timings.finalizing_seconds,
+                        ));
+                        if let Some(warning) = &snap.report_warning {
+                            self.warn(warning.clone());
+                        }
                         if let Some(p) = &snap.output_file {
                             detail_parts.push(format!("Path: {}", p.display()));
                         }
@@ -1185,6 +1269,16 @@ impl StudioApp {
         let mut render_clicked = false;
         let mut open_result_folder: Option<PathBuf> = None;
         generate_card(ui, |ui| {
+            if let Some(snapshot) = &snap {
+                ui.muted_label(format!(
+                    "{} · {:.1} detik",
+                    snapshot.stage.label(),
+                    snapshot.timings.total_elapsed_seconds
+                ));
+                if !snapshot.encoder_name.is_empty() {
+                    ui.metadata_label(&snapshot.encoder_name);
+                }
+            }
             plain_progress_bar(ui, progress);
             ui.add_space(4.0);
             if primary_render_button(ui, "Mulai Render", !running).clicked() {
@@ -1457,7 +1551,19 @@ impl StudioApp {
             video_path: PathBuf::from(&video.path),
             audio_files,
             track_titles,
-            thumbnail_path: self.generate.thumbnail_path.clone(),
+            thumbnail_path: if self.auto_generate_thumbnail {
+                None
+            } else {
+                self.generate.thumbnail_path.clone()
+            },
+            auto_thumbnail: self.auto_generate_thumbnail.then(|| AutoThumbnailRequest {
+                spec: self.build_generate_thumbnail_spec(),
+                timestamp: if self.thumbnail.timestamp.is_finite() {
+                    self.thumbnail.timestamp.clamp(0.0, video.duration.max(0.0))
+                } else {
+                    0.0
+                },
+            }),
             output_dir: output_dir.clone(),
             size,
             fps,
@@ -1469,6 +1575,7 @@ impl StudioApp {
             youtube_standard: self.video_settings.target == VideoTarget::YouTubeStandard,
             visual_mode,
             anti_duplicate,
+            output_code: None,
             pre_resolved_stamp: Some(stamp.clone()),
             fade_out_secs,
             crossfade_secs,
@@ -1530,9 +1637,20 @@ impl StudioApp {
             ),
         );
 
+        let sender = self.sender.clone();
         let ctx = self.ctx.clone();
         self.runtime.spawn(async move {
             render::execute_simple(&context, &job, request).await;
+            let snapshot = job.snapshot();
+            for detail in [Some(snapshot.error_message), snapshot.report_warning]
+                .into_iter()
+                .flatten()
+            {
+                if super::is_storage_full(&detail) {
+                    let _ = sender.send(Event::RenderStorageFull(format!("Generate: {detail}")));
+                    break;
+                }
+            }
             ctx.request_repaint();
         });
     }
@@ -1996,6 +2114,41 @@ fn labeled_combo(
                 ui.selectable_value(selected_idx, idx, *option);
             }
         });
+}
+
+pub(super) fn pinnable_card_header(
+    ui: &mut Ui,
+    icon: GenerateIcon,
+    title: &str,
+    description: &str,
+    pin: Option<&mut bool>,
+) {
+    ui.horizontal(|ui| {
+        card_header(ui, icon, title, description);
+        if let Some(pinned) = pin {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let hint = if *pinned {
+                    "Lepas pin"
+                } else {
+                    "Sematkan tampilan"
+                };
+                if square_icon_button(ui, GenerateIcon::Pin, true, *pinned, hint).clicked() {
+                    *pinned = !*pinned;
+                }
+            });
+        }
+    });
+}
+
+pub(super) fn pinned_content(ui: &mut Ui, pinned: bool, id: &str, contents: impl FnOnce(&mut Ui)) {
+    if pinned {
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .auto_shrink([false, false])
+            .show(ui, contents);
+    } else {
+        contents(ui);
+    }
 }
 
 pub(super) fn generate_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
@@ -2731,7 +2884,12 @@ pub(super) fn format_track_duration(total_seconds: u64) -> String {
     }
 }
 
-fn draw_generate_icon(painter: &egui::Painter, c: Pos2, icon: GenerateIcon, color: Color32) {
+pub(super) fn draw_generate_icon(
+    painter: &egui::Painter,
+    c: Pos2,
+    icon: GenerateIcon,
+    color: Color32,
+) {
     let stroke = Stroke::new(1.35_f32, color);
     match icon {
         GenerateIcon::Upload => {
@@ -3031,6 +3189,24 @@ fn draw_generate_icon(painter: &egui::Painter, c: Pos2, icon: GenerateIcon, colo
                 stroke,
             );
         }
+        GenerateIcon::Pin => {
+            let points = [
+                (-3.0, -5.0),
+                (3.0, -5.0),
+                (2.0, -3.0),
+                (2.0, 0.0),
+                (4.5, 2.0),
+                (-4.5, 2.0),
+                (-2.0, 0.0),
+                (-2.0, -3.0),
+                (-3.0, -5.0),
+            ];
+            painter.add(egui::Shape::line(
+                points.iter().map(|&(x, y)| c + egui::vec2(x, y)).collect(),
+                stroke,
+            ));
+            painter.line_segment([c + egui::vec2(0.0, 2.0), c + egui::vec2(0.0, 6.0)], stroke);
+        }
         GenerateIcon::Reset => {
             let radius = 4.6_f32;
             let start = -2.2_f32;
@@ -3057,6 +3233,88 @@ fn draw_generate_icon(painter: &egui::Painter, c: Pos2, icon: GenerateIcon, colo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview_track(id: u32, path: PathBuf) -> GenerateTrack {
+        GenerateTrack {
+            id,
+            path,
+            title: "Test".into(),
+            artist: String::new(),
+            duration: 60.0,
+            lrc: None,
+        }
+    }
+
+    #[test]
+    fn deleting_playlist_tracks_and_clearing_playlist_remove_owned_previews_only() {
+        let root = std::env::temp_dir().join(format!("playlist-cleanup-{}", uuid::Uuid::new_v4()));
+        let session = PreviewSession::new(&root.join("temp")).unwrap();
+        let original = root.join("song.mp3");
+        std::fs::write(&original, b"original song").unwrap();
+        let mut state = GenerateState::default();
+        state.tracks.push(preview_track(1, original.clone()));
+        state.tracks.push(preview_track(2, original.clone()));
+        let first = session.create_file();
+        let second = session.create_file();
+        let a = first.path().to_path_buf();
+        let b = second.path().to_path_buf();
+        std::fs::write(&a, b"first preview").unwrap();
+        std::fs::write(&b, b"second preview").unwrap();
+        state.previews.insert(1, first);
+        state.previews.insert(2, second);
+        state.remove_audio(0);
+        assert!(!a.exists());
+        assert!(b.exists());
+        assert_eq!(state.tracks[0].id, 2);
+        state.clear_audio();
+        assert!(!b.exists());
+        assert!(state.tracks.is_empty());
+        assert_eq!(std::fs::read(&original).unwrap(), b"original song");
+        drop(state);
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_playlist_preview_results_are_rejected_and_cleaned_after_track_removal() {
+        let root = std::env::temp_dir().join(format!("playlist-request-{}", uuid::Uuid::new_v4()));
+        let session = PreviewSession::new(&root).unwrap();
+        let mut state = GenerateState::default();
+        state.tracks.push(preview_track(1, root.join("song.mp3")));
+        state.loading_preview_id = Some(1);
+        state.preview_request_id = 2;
+        assert!(!state.preview_request_matches(1, 1));
+        assert!(state.preview_request_matches(1, 2));
+        state.remove_audio(0);
+        assert!(!state.preview_request_matches(1, 2));
+        let preview = session.create_file();
+        let path = preview.path().to_path_buf();
+        std::fs::write(&path, b"late output").unwrap();
+        let result = Event::GeneratePreview {
+            track_id: 1,
+            request_id: 2,
+            result: Ok(preview),
+        };
+        drop(result);
+        assert!(!path.exists());
+        drop(session);
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn dropping_playlist_releases_its_cached_previews() {
+        let root = std::env::temp_dir().join(format!("playlist-drop-{}", uuid::Uuid::new_v4()));
+        let session = PreviewSession::new(&root).unwrap();
+        let preview = session.create_file();
+        let path = preview.path().to_path_buf();
+        std::fs::write(&path, b"cached preview").unwrap();
+        let mut state = GenerateState::default();
+        state.previews.insert(1, preview);
+        drop(state);
+        assert!(!path.exists());
+        drop(session);
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn imported_generate_tracks_detect_matching_lrc_without_using_legacy_playlist() {

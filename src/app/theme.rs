@@ -837,14 +837,76 @@ pub fn control_slider<T: egui::emath::Numeric>(
     action_label: Option<&str>,
     action_enabled: bool,
 ) -> bool {
+    control_slider_impl(
+        ui,
+        label,
+        value,
+        range,
+        suffix,
+        decimals,
+        action_label.map(|label| (label, 112.0, None)),
+        action_enabled,
+        false,
+    )
+}
+
+pub fn control_slider_reset<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+    reset_hint: &str,
+) -> bool {
+    control_slider_impl(
+        ui,
+        label,
+        value,
+        range,
+        suffix,
+        0,
+        Some(("↻", metrics::CONTROL_HEIGHT, Some(reset_hint))),
+        true,
+        false,
+    )
+}
+
+/// The shared slider with its track expanded to the available column width.
+pub fn control_slider_fill<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+) {
+    control_slider_impl(ui, label, value, range, suffix, 0, None, true, true);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn control_slider_impl<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+    decimals: usize,
+    action: Option<(&str, f32, Option<&str>)>,
+    action_enabled: bool,
+    fill: bool,
+) -> bool {
     let p = Palette::of(ui.ctx());
     ui.muted_label(label)
         .on_hover_text("Geser slider, seret nilai angka, atau klik angkanya untuk mengetik nilai.");
     let mut action_clicked = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        let reserved_width = if action_label.is_some() { 205.0 } else { 90.0 };
-        ui.spacing_mut().slider_width = (ui.available_width() - reserved_width).clamp(64.0, 200.0);
+        let reserved_width = action.map_or(90.0, |(_, width, _)| 93.0 + width);
+        let track_width = (ui.available_width() - reserved_width).max(32.0);
+        ui.spacing_mut().slider_width = if fill {
+            track_width
+        } else {
+            track_width.clamp(64.0, 200.0)
+        };
         ui.add(
             egui::Slider::new(value, range.clone())
                 .show_value(false)
@@ -870,14 +932,15 @@ pub fn control_slider<T: egui::emath::Numeric>(
                         .suffix(suffix),
                 );
             });
-        if let Some(label) = action_label {
-            action_clicked = ui
-                .add_enabled(
-                    action_enabled,
-                    StyledButton::secondary(label)
-                        .min_size(egui::vec2(112.0, metrics::CONTROL_HEIGHT)),
-                )
-                .clicked();
+        if let Some((label, width, hint)) = action {
+            let response = ui.add_enabled(
+                action_enabled,
+                StyledButton::secondary(label).min_size(egui::vec2(width, metrics::CONTROL_HEIGHT)),
+            );
+            action_clicked = response.clicked();
+            if let Some(hint) = hint {
+                response.on_hover_text(hint);
+            }
         }
     });
     ui.add_space(1.0);
@@ -1070,6 +1133,7 @@ pub fn primary_button(text: impl Into<String>) -> StyledButton<'static> {
 #[derive(Clone, Copy)]
 pub enum SidebarIcon {
     Dashboard,
+    Project,
     RenderOld,
     Generate,
     BatchRender,
@@ -1154,6 +1218,24 @@ fn draw_sidebar_icon(painter: &egui::Painter, c: egui::Pos2, icon: SidebarIcon, 
                     egui::StrokeKind::Middle,
                 );
             }
+        }
+        SidebarIcon::Project => {
+            let points = vec![
+                egui::pos2(c.x - 7.0, c.y - 5.0),
+                egui::pos2(c.x - 2.0, c.y - 5.0),
+                egui::pos2(c.x, c.y - 3.0),
+                egui::pos2(c.x + 7.0, c.y - 3.0),
+                egui::pos2(c.x + 7.0, c.y + 5.0),
+                egui::pos2(c.x - 7.0, c.y + 5.0),
+            ];
+            painter.add(egui::Shape::closed_line(points, stroke));
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 7.0, c.y - 1.0),
+                    egui::pos2(c.x + 7.0, c.y - 1.0),
+                ],
+                stroke,
+            );
         }
         SidebarIcon::Generate => {
             let pts = [
@@ -1462,6 +1544,16 @@ pub fn heading_with_info(ui: &mut Ui, title: &str, text: &str) {
         ui.page_title(title);
         info(ui, text);
     });
+}
+
+/// Shared page heading: compact title and muted description, as in Generate.
+pub fn page_header(ui: &mut Ui, title: &str, description: &str) -> Response {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.page_title(title);
+        ui.muted_label(description);
+    })
+    .response
 }
 
 /// Frame for a floating surface panel inside a gap on the current palette background.

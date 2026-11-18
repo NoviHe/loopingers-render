@@ -189,13 +189,22 @@ pub enum VideoCompression {
     CompactSize,
 }
 
-/// Global video render preset from Settings (`Custom | Standar YouTube`, codec, compression).
+/// Encoder effort; does not change the requested frame size, FPS, or effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RenderSpeed {
+    #[default]
+    Balanced,
+    Fast,
+}
+
+/// Global video render settings, including the optional faster encoder preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VideoRenderSettings {
     pub target: VideoTarget,
     pub codec: VideoCodec,
     pub compression: VideoCompression,
+    pub speed: RenderSpeed,
 }
 
 impl VideoRenderSettings {
@@ -215,6 +224,13 @@ impl VideoRenderSettings {
     }
 
     pub fn resolve_preset(self, encoder: Encoder) -> &'static str {
+        if self.speed == RenderSpeed::Fast {
+            return match encoder {
+                Encoder::NvencH264 | Encoder::NvencHevc => "p3",
+                Encoder::AmfH264 | Encoder::AmfHevc => "speed",
+                Encoder::CpuX264 | Encoder::CpuX265 => "veryfast",
+            };
+        }
         if self.compression == VideoCompression::CompactSize
             && matches!(encoder, Encoder::CpuX264 | Encoder::CpuX265)
         {
@@ -395,6 +411,7 @@ mod tests {
             target: VideoTarget::YouTubeStandard,
             codec: VideoCodec::Hevc,
             compression: VideoCompression::OriginalQuality,
+            speed: RenderSpeed::Balanced,
         };
         assert_eq!(settings.effective_codec(), VideoCodec::H264);
         assert_eq!(settings.resolve_encoder(&hw), Encoder::NvencH264);
@@ -416,6 +433,7 @@ mod tests {
             target: VideoTarget::Custom,
             codec: VideoCodec::Hevc,
             compression: VideoCompression::CompactSize,
+            speed: RenderSpeed::Balanced,
         };
         let encoder = settings.resolve_encoder(&hw);
         assert_eq!(encoder, Encoder::CpuX265);
@@ -423,5 +441,40 @@ mod tests {
         assert_eq!(settings.resolve_quality(encoder), 28);
         assert!(!settings.can_stream_copy("hevc", "yuv420p", (1920, 1080), (1920, 1080)));
         assert_eq!(settings.resolve_audio_bitrate(""), "128k");
+    }
+
+    #[test]
+    fn fast_mode_only_changes_encoder_effort_and_keeps_output_constraints() {
+        let balanced = VideoRenderSettings {
+            target: VideoTarget::YouTubeStandard,
+            compression: VideoCompression::CompactSize,
+            ..VideoRenderSettings::default()
+        };
+        let fast = VideoRenderSettings {
+            speed: RenderSpeed::Fast,
+            ..balanced
+        };
+        for encoder in Encoder::ALL {
+            assert!(encoder.presets().contains(&fast.resolve_preset(encoder)));
+            assert_eq!(
+                fast.resolve_quality(encoder),
+                balanced.resolve_quality(encoder)
+            );
+        }
+        assert_eq!(fast.resolve_preset(Encoder::NvencH264), "p3");
+        assert_eq!(balanced.resolve_preset(Encoder::NvencH264), "p5");
+        assert_eq!(
+            fast.resolve_target_size((3840, 2160)),
+            balanced.resolve_target_size((3840, 2160))
+        );
+        assert_eq!(
+            fast.resolve_audio_bitrate("320k"),
+            balanced.resolve_audio_bitrate("320k")
+        );
+        let old: VideoRenderSettings = serde_json::from_str(
+            r#"{"target":"YouTubeStandard","codec":"H264","compression":"CompactSize"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.speed, RenderSpeed::Balanced);
     }
 }

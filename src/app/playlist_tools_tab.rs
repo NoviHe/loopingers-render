@@ -9,17 +9,19 @@ use super::{
 
 impl StudioApp {
     pub(super) fn playlist_tools_tab(&mut self, ui: &mut egui::Ui) {
+        let can_pin = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+        let pinned = can_pin && self.playlist_header_pinned;
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.page_title("Playlist");
-        ui.muted_label("Kelola daftar lagu Generate, susun urutan album, dan siapkan teks daftar lagu serta timestamp.");
+        theme::page_header(ui, "Playlist", "Kelola daftar lagu Generate, susun urutan album, dan siapkan teks daftar lagu serta timestamp.");
         ui.add_space(4.0);
 
         generate_card(ui, |ui| {
-            card_header(
+            super::generate_tab::pinnable_card_header(
                 ui,
                 GenerateIcon::Music,
                 "Sumber Lagu",
                 "Sinkron dengan Generate dan Batch Render.",
+                can_pin.then_some(&mut self.playlist_header_pinned),
             );
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -35,16 +37,17 @@ impl StudioApp {
             });
             ui.muted_label("Seret file audio atau folder ke halaman ini. Perubahan daftar dan urutan langsung berlaku di Generate dan Batch Render.");
         });
-
-        if ui.available_width() >= 1080.0 {
-            ui.columns(2, |columns| {
-                self.generate_playlist_card(&mut columns[0]);
-                self.playlist_text_tools(&mut columns[1], true);
-            });
-        } else {
-            self.generate_playlist_card(ui);
-            self.playlist_text_tools(ui, false);
-        }
+        super::generate_tab::pinned_content(ui, pinned, "playlist_scroll", |ui| {
+            if ui.available_width() >= 1080.0 {
+                ui.columns(2, |columns| {
+                    self.generate_playlist_card(&mut columns[0]);
+                    self.playlist_text_tools(&mut columns[1], true);
+                });
+            } else {
+                self.generate_playlist_card(ui);
+                self.playlist_text_tools(ui, false);
+            }
+        });
     }
 
     fn playlist_text_tools(&mut self, ui: &mut egui::Ui, stacked: bool) {
@@ -193,6 +196,7 @@ mod tests {
             id,
             path: format!("{title}.mp3").into(),
             title: title.into(),
+            artist: String::new(),
             duration,
             lrc: None,
         }

@@ -10,11 +10,12 @@ impl StudioApp {
     pub(super) fn dashboard_tab(&mut self, ui: &mut egui::Ui) {
         let p = theme::Palette::of(ui.ctx());
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.page_title("Dashboard");
-        ui.muted_label(
+        theme::page_header(
+            ui,
+            "Dashboard",
             "Selamat datang! Siapkan render video full album Anda dalam beberapa langkah.",
         );
-        ui.add_space(12.0);
+        ui.add_space(4.0);
 
         let output_dir = self
             .generate

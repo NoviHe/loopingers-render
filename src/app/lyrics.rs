@@ -4,6 +4,7 @@ use eframe::egui;
 use loopkaraoke::{
     karaoke::{
         lrc::parse_lrc,
+        preview::PreviewFile,
         spread_words,
         styles::THEMES,
         transcribe::{ModelSize, TranscribeOptions},
@@ -28,8 +29,6 @@ const LANGUAGES: [(&str, Option<&str>); 5] = [
     ("Jepang", Some("ja")),
     ("Korea", Some("ko")),
 ];
-
-const PREVIEW_HEIGHT: f32 = 84.0;
 
 pub const KARAOKE_FONTS: [super::thumbnail_tab::FontChoice; 10] = [
     super::thumbnail_tab::FontChoice {
@@ -272,11 +271,22 @@ fn is_interlude_section_header(line: &str) -> bool {
         || inner.contains("break")
 }
 
+fn unique_standalone_audio_paths(loaded: &[PathBuf], paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let identity =
+        |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut seen: std::collections::HashSet<PathBuf> =
+        loaded.iter().map(|path| identity(path)).collect();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(identity(path)))
+        .collect()
+}
+
 pub struct StandaloneTrack {
     pub id: u32,
     pub info: AudioInfo,
     pub title: String,
-    pub wav_preview: Option<PathBuf>,
+    pub wav_preview: Option<PreviewFile>,
     pub lines: Vec<LyricLine>,
     pub raw_lyrics_input: String,
     pub active_row: usize,
@@ -460,6 +470,8 @@ pub struct StandaloneLyricsState {
     pub selected_track: usize,
     pub next_id: u32,
     pub loading_audio: bool,
+    pub loading_preview_id: Option<u32>,
+    pub preview_request_id: u64,
     pub playing: bool,
     pub current_time: f64,
     pub last_tick: Option<Instant>,
@@ -480,6 +492,8 @@ impl Default for StandaloneLyricsState {
             selected_track: 0,
             next_id: 1,
             loading_audio: false,
+            loading_preview_id: None,
+            preview_request_id: 0,
             playing: false,
             current_time: 0.0,
             last_tick: None,
@@ -525,7 +539,7 @@ impl StandaloneLyricsState {
         self.current_track().map(|t| t.duration()).unwrap_or(180.0)
     }
 
-    pub fn add_audio_track(&mut self, info: AudioInfo, wav_preview: Option<PathBuf>) {
+    pub fn add_audio_track(&mut self, info: AudioInfo, wav_preview: Option<PreviewFile>) {
         let id = self.next_id;
         self.next_id += 1;
         let title = clean_proper_title(&info.title);
@@ -557,6 +571,27 @@ impl StandaloneLyricsState {
         }
     }
 
+    pub fn remove_track(&mut self, index: usize) {
+        if index >= self.tracks.len() {
+            return;
+        }
+        if index == self.selected_track {
+            self.stop_playback();
+            self.current_time = 0.0;
+        } else if index < self.selected_track {
+            self.selected_track -= 1;
+        }
+        self.tracks.remove(index);
+        self.selected_track = self.selected_track.min(self.tracks.len().saturating_sub(1));
+    }
+
+    pub fn clear_tracks(&mut self) {
+        self.stop_playback();
+        self.tracks.clear();
+        self.selected_track = 0;
+        self.current_time = 0.0;
+    }
+
     pub fn select_track(&mut self, index: usize) {
         if index < self.tracks.len() && self.selected_track != index {
             self.stop_playback();
@@ -566,21 +601,31 @@ impl StandaloneLyricsState {
     }
 
     pub fn start_playback(&mut self) {
-        self.playing = true;
-        self.last_tick = Some(Instant::now());
         if let Some(track) = self.current_track() {
             if let Some(wav) = &track.wav_preview {
-                if wav.is_file() {
-                    win_audio::play_from(wav, self.current_time);
+                if wav.path().is_file() {
+                    win_audio::play_from(wav.path(), self.current_time);
+                    self.playing = true;
+                    self.last_tick = Some(Instant::now());
                 }
             }
         }
     }
 
     pub fn stop_playback(&mut self) {
+        self.preview_request_id = self.preview_request_id.wrapping_add(1);
+        self.loading_preview_id = None;
         self.playing = false;
         self.last_tick = None;
         win_audio::stop();
+    }
+
+    pub(super) fn preview_request_matches(&self, track_id: u32, request_id: u64) -> bool {
+        self.loading_preview_id == Some(track_id)
+            && self.preview_request_id == request_id
+            && self
+                .current_track()
+                .is_some_and(|track| track.id == track_id)
     }
 
     pub fn seek_to(&mut self, time: f64) {
@@ -590,8 +635,8 @@ impl StandaloneLyricsState {
         if self.playing {
             if let Some(track) = self.current_track() {
                 if let Some(wav) = &track.wav_preview {
-                    if wav.is_file() {
-                        win_audio::play_from(wav, self.current_time);
+                    if wav.path().is_file() {
+                        win_audio::play_from(wav.path(), self.current_time);
                     }
                 }
             }
@@ -620,27 +665,34 @@ impl StandaloneLyricsState {
 
 impl StudioApp {
     pub(super) fn lyrics_tab(&mut self, ui: &mut egui::Ui) {
+        let can_pin = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+        let pinned = can_pin && self.lyrics_header_pinned;
         self.lrc_studio.tick(ui.ctx());
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.page_title("Lirik");
-        ui.muted_label(
+        theme::page_header(
+            ui,
+            "Lirik",
             "Studio LRC untuk membuat, menyelaraskan waktu, dan memperbaiki lirik lagu.",
         )
         .on_hover_text(help::HEADING);
         ui.add_space(4.0);
         generate_card(ui, |ui| {
-            card_header(
+            super::generate_tab::pinnable_card_header(
                 ui,
                 GenerateIcon::Music,
                 "Studio Lirik",
                 "Mulai dari lagu, buat lirik, lalu simpan LRC.",
+                can_pin.then_some(&mut self.lyrics_header_pinned),
             );
             ui.add_space(6.0);
             let has_track = self.lrc_studio.current_track().is_some();
-            let has_lyrics = self
+            let ready: Vec<_> = self
                 .lrc_studio
-                .current_track()
-                .is_some_and(|track| track.has_lyrics());
+                .tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, track)| track.has_lyrics().then_some(index))
+                .collect();
             let can_import = !self.lrc_studio.loading_audio
                 && self.generate.tracks.iter().any(|track| {
                     !self
@@ -674,45 +726,92 @@ impl StudioApp {
                         self.pick_standalone_lrc_file();
                     }
                 });
-                ui.add_enabled_ui(has_lyrics, |ui| {
-                    if outline_icon_button(ui, GenerateIcon::Copy, "Simpan LRC").clicked() {
-                        self.export_standalone_lrc_file();
+                ui.add_enabled_ui(!ready.is_empty(), |ui| {
+                    let label = if ready.len() > 1 {
+                        "Simpan Semua LRC"
+                    } else {
+                        "Simpan LRC"
+                    };
+                    if outline_icon_button(ui, GenerateIcon::Copy, label).clicked() {
+                        match ready.as_slice() {
+                            [index] => self.export_lrc_track(*index),
+                            [] => {}
+                            _ => self.export_all_lrc_tracks(&ready),
+                        }
                     }
                 });
             });
             ui.muted_label("Ambil lagu Generate atau tambahkan audio sendiri. File LRC dengan nama yang sama dibaca otomatis saat lagu dimuat.");
         });
-        ui.add_space(4.0);
-        let maximized = ui
-            .ctx()
-            .input(|input| input.viewport().maximized.unwrap_or(false));
-        if maximized {
-            let content_width = ui.available_width();
-            let columns_width = (content_width - 32.0).max(0.0);
-            ui.set_width(columns_width);
-            ui.set_max_width(columns_width);
-            ui.columns(2, |columns| {
-                self.standalone_lyrics_left(&mut columns[0], false, true);
-                let left_layout_bottom = columns[0].min_rect().bottom();
-                self.standalone_lyrics_right(&mut columns[1], true, Some(left_layout_bottom));
-            });
-        } else {
-            self.standalone_lyrics_left(ui, true, false);
-        }
+        super::generate_tab::pinned_content(ui, pinned, "lyrics_scroll", |ui| {
+            ui.add_space(4.0);
+            let maximized = ui
+                .ctx()
+                .input(|input| input.viewport().maximized.unwrap_or(false));
+            if maximized {
+                let content_width = ui.available_width();
+                let columns_width = (content_width - 32.0).max(0.0);
+                ui.set_width(columns_width);
+                ui.set_max_width(columns_width);
+                ui.columns(2, |columns| {
+                    self.standalone_lyrics_left(&mut columns[0], false, true);
+                    let left_layout_bottom = columns[0].min_rect().bottom();
+                    self.standalone_lyrics_right(&mut columns[1], true, Some(left_layout_bottom));
+                });
+            } else {
+                self.standalone_lyrics_left(ui, true, false);
+            }
+        });
+    }
+
+    pub(super) fn karaoke_has_wide_layout(ui: &egui::Ui) -> bool {
+        ui.available_width() >= 1080.0
+            && ui
+                .ctx()
+                .input(|input| input.viewport().maximized.unwrap_or(false))
     }
 
     pub(super) fn karaoke_tab(&mut self, ui: &mut egui::Ui) {
+        let wide = Self::karaoke_has_wide_layout(ui);
+        let pinned = self.karaoke_preview_pinned;
+        self.update_album_preview(ui);
         ui.spacing_mut().item_spacing.y = 8.0;
-        ui.page_title("Karaoke");
-        ui.muted_label("Atur gaya teks dan periksa posisi lirik pada video album.");
+        theme::page_header(
+            ui,
+            "Karaoke",
+            "Atur gaya teks dan periksa posisi lirik pada video album.",
+        );
         ui.add_space(4.0);
         generate_card(ui, |ui| {
-            card_header(
-                ui,
-                GenerateIcon::Sliders,
-                "Tampilan Karaoke",
-                "Font, warna, posisi, dan preview lirik.",
-            );
+            ui.horizontal(|ui| {
+                card_header(
+                    ui,
+                    GenerateIcon::Sliders,
+                    "Tampilan Karaoke",
+                    "Font, warna, posisi, dan preview lirik.",
+                );
+                if wide {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let pinned = self.karaoke_preview_pinned;
+                        let hint = if pinned {
+                            "Lepas pin tampilan Karaoke"
+                        } else {
+                            "Sematkan tampilan Karaoke"
+                        };
+                        if super::generate_tab::square_icon_button(
+                            ui,
+                            GenerateIcon::Pin,
+                            true,
+                            pinned,
+                            hint,
+                        )
+                        .clicked()
+                        {
+                            self.karaoke_preview_pinned = !pinned;
+                        }
+                    });
+                }
+            });
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 if outline_icon_button(ui, GenerateIcon::Music, "Buka Playlist").clicked() {
@@ -737,16 +836,26 @@ impl StudioApp {
             });
             ui.muted_label("Preview memakai lagu dan video Generate. Pembakaran lirik dengan gaya ini tersedia melalui Render Old; Generate saat ini belum membakar lirik karaoke.");
         });
-        if ui.available_width() >= 1080.0 {
+        if wide {
             ui.columns(2, |columns| {
-                self.karaoke_settings_card(&mut columns[0]);
+                let mut settings = |ui: &mut egui::Ui| {
+                    self.album_preview_playlist_card(ui);
+                    self.karaoke_settings_card(ui);
+                };
+                if pinned {
+                    egui::ScrollArea::vertical()
+                        .id_salt("karaoke_settings_scroll")
+                        .auto_shrink([false, false])
+                        .show(&mut columns[0], settings);
+                } else {
+                    settings(&mut columns[0]);
+                }
                 generate_card(&mut columns[1], |ui| self.karaoke_preview_card(ui));
-                generate_card(&mut columns[1], |ui| self.karaoke_track_list(ui));
             });
         } else {
+            self.album_preview_playlist_card(ui);
             generate_card(ui, |ui| self.karaoke_preview_card(ui));
             self.karaoke_settings_card(ui);
-            generate_card(ui, |ui| self.karaoke_track_list(ui));
         }
     }
 
@@ -759,56 +868,8 @@ impl StudioApp {
                 "Pengaturan teks karaoke dan tata letak.",
             );
             ui.add_space(8.0);
-            ui.checkbox(
-                &mut self.show_karaoke_lyrics,
-                "Aktifkan lirik saat render melalui Render Old",
-            );
-            ui.add_space(8.0);
             self.style_section(ui);
         });
-    }
-
-    fn karaoke_track_list(&self, ui: &mut egui::Ui) {
-        let p = theme::Palette::of(ui.ctx());
-        let tracks = &self.generate.tracks;
-        let lrc_count = tracks.iter().filter(|track| track.lrc.is_some()).count();
-        card_header(
-            ui,
-            GenerateIcon::Music,
-            "Lirik Album",
-            &format!("{lrc_count} dari {} lagu memiliki LRC", tracks.len()),
-        );
-        ui.add_space(8.0);
-        if tracks.is_empty() {
-            ui.muted_label("Tambahkan lagu di Generate atau Playlist untuk melihat status LRC.");
-            return;
-        }
-        egui::ScrollArea::vertical()
-            .id_salt("karaoke_tracks")
-            .max_height(260.0)
-            .show(ui, |ui| {
-                for (index, track) in tracks.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.monospace(
-                            egui::RichText::new(format!("{:02}", index + 1)).color(p.text_muted),
-                        );
-                        ui.add(egui::Label::new(&track.title).truncate());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some((path, lines)) = &track.lrc {
-                                ui.small(
-                                    egui::RichText::new(format!("{lines} baris"))
-                                        .color(p.text_muted),
-                                )
-                                .on_hover_text(path.display().to_string());
-                                super::playlist::draw_lrc_badge(ui, *lines);
-                            } else {
-                                ui.muted_label("Belum ada LRC");
-                            }
-                        });
-                    });
-                    ui.add_space(4.0);
-                }
-            });
     }
 
     /// Preview seperti Thumbnail / Main Menu: background + daftar lagu + contoh teks karaoke,
@@ -818,7 +879,12 @@ impl StudioApp {
         let preview_path = self.thumbnail_preview_path();
 
         ui.horizontal(|ui| {
-            ui.strong("Preview Karaoke");
+            card_header(
+                ui,
+                GenerateIcon::Play,
+                "Preview Karaoke",
+                "Lihat gaya dan posisi lirik pada video.",
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(video) = &self.generate.video {
                     ui.weak(format!("{}x{}", video.width, video.height));
@@ -850,12 +916,10 @@ impl StudioApp {
 
         // Background (frame video / gambar), atau pemandangan contoh jika belum ada background
         if let Some(path) = preview_path {
-            ui.put(
-                viewport,
-                egui::Image::new(format!("file://{}", path.display()))
-                    .fit_to_exact_size(viewport.size())
-                    .corner_radius(8),
-            );
+            egui::Image::new(format!("file://{}", path.display()))
+                .fit_to_exact_size(viewport.size())
+                .corner_radius(8)
+                .paint_at(ui, viewport);
         } else {
             super::thumbnail_tab::draw_scenic_placeholder(&vp_painter, viewport);
         }
@@ -865,8 +929,15 @@ impl StudioApp {
         } else {
             Vec::new()
         };
-        let sample = self.karaoke_sample_line();
-        let karaoke_rect = self.draw_karaoke_overlay(&vp_painter, viewport, &sample);
+        if self.style.show_intro {
+            self.draw_karaoke_intro(&vp_painter, viewport);
+        }
+        let (sample, fraction, show_example_input) = self.karaoke_preview_line();
+        let karaoke_rect = if sample.is_empty() {
+            egui::Rect::NOTHING
+        } else {
+            self.draw_karaoke_overlay(&vp_painter, viewport, &sample, fraction)
+        };
         let overlapping = occupied.iter().any(|r| r.intersects(karaoke_rect));
         if overlapping {
             draw_karaoke_overlap_marker(&vp_painter, viewport, karaoke_rect);
@@ -892,47 +963,120 @@ impl StudioApp {
             ui.muted_label("Pilih video di Generate untuk menyiapkan latar preview.");
         }
 
-        ui.add_space(6.0);
-        ui.label("Teks contoh:");
-        theme::text_field(
-            ui,
-            &mut self.karaoke_preview_text,
-            "Kosong = baris lirik pertama dari playlist",
-            theme::InputWidth::Fill,
-        )
-        .on_hover_text(
-            "Coba teks panjang untuk memastikan lirik yang terbungkus 2 baris tetap tidak menumpuk",
-        );
+        if show_example_input {
+            ui.add_space(6.0);
+            ui.label("Teks contoh:");
+            theme::text_field(
+                ui,
+                &mut self.karaoke_preview_text,
+                "Preview teks karaoke Anda",
+                theme::InputWidth::Fill,
+            )
+            .on_hover_text(
+                "Coba teks panjang untuk memastikan lirik yang terbungkus 2 baris tetap tidak menumpuk",
+            );
+        }
     }
 
-    /// Baris contoh untuk pratinjau: teks khusus, baris lirik nyata pertama, atau teks bawaan.
-    pub(super) fn karaoke_sample_line(&self) -> String {
-        let custom = self.karaoke_preview_text.trim();
-        if !custom.is_empty() {
-            return custom.to_owned();
+    fn draw_karaoke_intro(&self, painter: &egui::Painter, rect: egui::Rect) {
+        let banner = &self.style.intro_banner;
+        let (title, artist) = self
+            .generate
+            .tracks
+            .get(self.visualizer_selected_track)
+            .map(|track| {
+                (
+                    loopkaraoke::media::clean_proper_title(&track.title),
+                    loopkaraoke::media::clean_artist(&track.artist),
+                )
+            })
+            .unwrap_or_else(|| ("Judul Lagu".into(), "Nama Penyanyi".into()));
+        let font = KARAOKE_FONTS[self.style.intro_font_preset].id;
+        let family = egui::FontFamily::Name(font.into());
+        let output_height = self
+            .generate
+            .video
+            .as_ref()
+            .map_or(1080, |video| video.height.max(1));
+        let scale = rect.height() / output_height as f32;
+        let [r, g, b] = banner.color;
+        let color = egui::Color32::from_rgb(r, g, b);
+        let painter = painter.with_clip_rect(rect);
+        let layout = |text: String, size: u32| {
+            let mut job = egui::text::LayoutJob::simple(
+                text,
+                egui::FontId::new((size as f32 * scale).max(1.0), family.clone()),
+                color,
+                rect.width(),
+            );
+            job.halign = egui::Align::Center;
+            painter.layout_job(job)
+        };
+        let artist = (!artist.trim().is_empty() && !artist.eq_ignore_ascii_case(&title))
+            .then(|| layout(artist, banner.size * 65 / 100));
+        let title = layout(title, banner.size);
+        let height = title.size().y + artist.as_ref().map_or(0.0, |text| text.size().y);
+        let x = rect.left() + rect.width() * banner.x / 100.0;
+        let y = rect.top() + rect.height() * banner.y / 100.0 - height / 2.0;
+        let artist_y = y + title.size().y;
+        painter.galley(egui::pos2(x - title.rect.center().x, y), title, color);
+        if let Some(artist) = artist {
+            painter.galley(
+                egui::pos2(x - artist.rect.center().x, artist_y),
+                artist,
+                color,
+            );
         }
-        if self.tab == super::Tab::Karaoke {
-            return self
-                .lrc_studio
-                .tracks
-                .iter()
-                .filter(|studio| {
-                    self.generate
-                        .tracks
-                        .iter()
-                        .any(|track| track.path == std::path::Path::new(&studio.info.path))
-                })
-                .flat_map(|track| track.lines.iter())
-                .find(|line| !line.text.trim().is_empty())
-                .map(|line| line.text.clone())
-                .unwrap_or_else(|| "Preview teks karaoke Anda".into());
+    }
+
+    fn karaoke_preview_line(&mut self) -> (String, f32, bool) {
+        if self.generate.tracks.is_empty() {
+            let custom = self.karaoke_preview_text.trim();
+            let sample = if custom.is_empty() {
+                "Preview teks karaoke Anda"
+            } else {
+                custom
+            };
+            return (sample.to_owned(), 0.45, true);
         }
-        self.tracks
-            .iter()
-            .flat_map(|t| t.lyrics.iter())
-            .map(|l| l.text.trim())
-            .find(|text| !is_break_line_text(text))
-            .map_or_else(|| "Contoh lirik karaoke di video".to_owned(), str::to_owned)
+        let lines = self
+            .generate
+            .tracks
+            .get(self.visualizer_selected_track)
+            .and_then(|track| {
+                if let Some(studio) = self.lrc_studio.tracks.iter().find(|studio| {
+                    track.path == std::path::Path::new(&studio.info.path) && studio.has_lyrics()
+                }) {
+                    return Some(studio.lines.as_slice());
+                }
+                let (path, _) = track.lrc.as_ref()?;
+                if self
+                    .karaoke_preview_lrc
+                    .as_ref()
+                    .is_none_or(|(cached, _)| cached != path)
+                {
+                    let lines = std::fs::read_to_string(path)
+                        .map(|content| parse_lrc(&content))
+                        .unwrap_or_default();
+                    self.karaoke_preview_lrc = Some((path.clone(), lines));
+                }
+                self.karaoke_preview_lrc
+                    .as_ref()
+                    .map(|(_, lines)| lines.as_slice())
+            });
+        let Some(lines) = lines.filter(|lines| !lines.is_empty()) else {
+            return (self.karaoke_preview_text.trim().to_owned(), 0.45, true);
+        };
+        let time = self.visualizer_time;
+        let current = lines.iter().rev().find(|line| line.start <= time);
+        match current.filter(|line| time < line.end) {
+            Some(line) => (
+                line.text.clone(),
+                ((time - line.start) / (line.end - line.start)).clamp(0.0, 1.0) as f32,
+                false,
+            ),
+            None => (String::new(), 0.0, false),
+        }
     }
 
     /// Menggambar contoh teks karaoke sesuai gaya (font, warna, posisi, jarak tepi) pada area video.
@@ -943,8 +1087,8 @@ impl StudioApp {
         painter: &egui::Painter,
         rect: egui::Rect,
         text: &str,
+        sung_fraction: f32,
     ) -> egui::Rect {
-        const SUNG_FRACTION: f32 = 0.45;
         let painter = painter.with_clip_rect(rect);
         let out_h = if self.tab == super::Tab::Karaoke {
             self.generate
@@ -1018,7 +1162,7 @@ impl StudioApp {
         let sung = egui::Rect::from_min_max(
             text_rect.min,
             egui::pos2(
-                text_rect.left() + text_rect.width() * SUNG_FRACTION,
+                text_rect.left() + text_rect.width() * sung_fraction,
                 text_rect.bottom(),
             ),
         );
@@ -1101,14 +1245,12 @@ impl StudioApp {
 
                 if total_tracks > 0
                     && ui
-                        .small_button("🗑 Kosongkan Lagu")
+                        .add_enabled(!busy, theme::StyledButton::ghost("🗑 Kosongkan Lagu").small())
                         .on_hover_text("Hapus semua lagu dari daftar Studio Lirik")
                         .clicked()
                 {
-                    self.lrc_studio.stop_playback();
-                    self.lrc_studio.tracks.clear();
-                    self.lrc_studio.selected_track = 0;
-                    self.lrc_studio.current_time = 0.0;
+                    self.lrc_studio.clear_tracks();
+                    self.storage = None;
                 }
             });
 
@@ -1237,15 +1379,8 @@ impl StudioApp {
                     self.lrc_studio.select_track(idx);
                 }
                 if let Some(idx) = remove_idx {
-                    if idx == self.lrc_studio.selected_track {
-                        self.lrc_studio.stop_playback();
-                        self.lrc_studio.current_time = 0.0;
-                    }
-                    self.lrc_studio.tracks.remove(idx);
-                    if self.lrc_studio.selected_track >= self.lrc_studio.tracks.len() {
-                        self.lrc_studio.selected_track =
-                            self.lrc_studio.tracks.len().saturating_sub(1);
-                    }
+                    self.lrc_studio.remove_track(idx);
+                    self.storage = None;
                 }
             }
 
@@ -1255,49 +1390,38 @@ impl StudioApp {
             let max_dur = self.lrc_studio.duration();
             let cur_time = self.lrc_studio.current_time;
             let is_playing = self.lrc_studio.playing;
+            let is_preparing = self.lrc_studio.loading_preview_id.is_some();
             let has_track = !self.lrc_studio.tracks.is_empty();
 
+            use super::visualizer_playlist::{preview_timeline, transport_button, TransportIcon};
             ui.horizontal_wrapped(|ui| {
-                let play_btn = if is_playing {
-                    "⏸ Jeda"
+                let (icon, hint) = if is_preparing {
+                    (TransportIcon::Stop, "Batal putar preview")
+                } else if is_playing {
+                    (TransportIcon::Pause, "Jeda preview")
                 } else {
-                    "▶ Putar Lagu"
+                    (TransportIcon::Play, "Putar preview")
                 };
-                if ui
-                    .add_enabled(has_track, theme::StyledButton::secondary(egui::RichText::new(play_btn).strong()))
-                    .on_hover_text("Putar atau jeda lagu yang dipilih untuk mencocokkan waktu lirik")
-                    .clicked()
-                {
-                    if is_playing {
+                if transport_button(ui, icon, has_track, hint).clicked() {
+                    if is_playing || is_preparing {
                         self.lrc_studio.stop_playback();
                     } else {
-                        self.lrc_studio.start_playback();
+                        self.start_standalone_playback();
                     }
                 }
-
-                if ui
-                    .add_enabled(has_track, theme::StyledButton::secondary("⏮ -3s").small())
-                    .on_hover_text("Mundur 3 detik")
-                    .clicked()
-                {
+                if transport_button(ui, TransportIcon::Back, has_track, "Mundur 3 detik").clicked() {
                     self.lrc_studio.seek_to(cur_time - 3.0);
                 }
-                if ui
-                    .add_enabled(has_track, theme::StyledButton::secondary("⏭ +3s").small())
-                    .on_hover_text("Maju 3 detik")
-                    .clicked()
-                {
+                if transport_button(ui, TransportIcon::Forward, has_track, "Maju 3 detik").clicked() {
                     self.lrc_studio.seek_to(cur_time + 3.0);
                 }
-                if ui
-                    .add_enabled(has_track, theme::StyledButton::secondary("⏹ 0:00").small())
-                    .on_hover_text("Kembali ke awal lagu")
-                    .clicked()
-                {
+                if transport_button(ui, TransportIcon::Stop, has_track, "Hentikan dan kembali ke 0:00").clicked() {
                     self.lrc_studio.seek_to(0.0);
                     self.lrc_studio.stop_playback();
                 }
-
+                if is_preparing {
+                    ui.spinner().on_hover_text("Menyiapkan preview...");
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.monospace(
                         egui::RichText::new(format!("{} / {}", clock(cur_time), clock(max_dur)))
@@ -1306,21 +1430,8 @@ impl StudioApp {
                 });
             });
 
-            ui.add_space(2.0);
             let mut seek_pos = cur_time;
-            let slider_w = ui.available_width().max(120.0);
-            let slider_resp = ui
-                .scope(|ui| {
-                    ui.spacing_mut().slider_width = slider_w;
-                    ui.add_enabled(
-                        has_track,
-                        egui::Slider::new(&mut seek_pos, 0.0..=max_dur)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                })
-                .inner;
-            if slider_resp.changed() {
+            if preview_timeline(ui, &mut seek_pos, max_dur, has_track).changed() {
                 self.lrc_studio.seek_to(seek_pos);
             }
 
@@ -1345,6 +1456,7 @@ impl StudioApp {
             );
             ui.add_space(4.0);
 
+            let previous_model = self.lrc_studio.whisper_model;
             if !ModelSize::ALL.contains(&self.lrc_studio.whisper_model) {
                 self.lrc_studio.whisper_model = ModelSize::Base;
             }
@@ -1371,6 +1483,9 @@ impl StudioApp {
                     });
             });
 
+            if previous_model != self.lrc_studio.whisper_model {
+                self.save_settings();
+            }
             let gpu_available = self
                 .hardware
                 .as_ref()
@@ -2084,7 +2199,7 @@ impl StudioApp {
                     LineAction::Seek(t) => {
                         self.lrc_studio.seek_to(t);
                         if !self.lrc_studio.playing {
-                            self.lrc_studio.start_playback();
+                            self.start_standalone_playback();
                         }
                     }
                     LineAction::InsertAfter(idx) => {
@@ -2355,37 +2470,96 @@ impl StudioApp {
     }
 
     pub(super) fn load_standalone_audios(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() || self.lrc_studio.loading_audio {
+            return;
+        }
+        let loaded: Vec<PathBuf> = self
+            .lrc_studio
+            .tracks
+            .iter()
+            .map(|track| PathBuf::from(&track.info.path))
+            .collect();
+        let paths = unique_standalone_audio_paths(&loaded, paths);
         if paths.is_empty() {
+            self.info("Lagu yang dipilih sudah ada di Studio Lirik.");
             return;
         }
         self.lrc_studio.loading_audio = true;
         let tools = self.tools.clone();
-        let temp_dir = self.paths.temp.clone();
         self.spawn(async move {
             let mut results = Vec::with_capacity(paths.len());
             for path in paths {
-                let info = probe_audio(&tools, &path).await;
-                let wav_out = temp_dir.join(format!(
-                    "lrc_studio_preview_{}.wav",
-                    loopkaraoke::util::random_id(8)
-                ));
-                let mut wav_cmd = tools.ffmpeg();
-                wav_cmd
-                    .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-                    .arg(&path)
-                    .args(["-vn", "-ac", "2", "-ar", "44100", "-acodec", "pcm_s16le"])
-                    .arg(&wav_out);
-                let wav_ok = loopkaraoke::ffmpeg::run(&mut wav_cmd, "FFmpeg (audio preview)")
-                    .await
-                    .is_ok()
-                    && wav_out.is_file();
-                results.push((info, if wav_ok { Some(wav_out) } else { None }));
+                results.push(probe_audio(&tools, &path).await);
             }
             Event::StandaloneAudios(results)
         });
     }
 
+    fn start_standalone_playback(&mut self) {
+        self.stop_visualizer_playback(false);
+        self.stop_generate_preview();
+        let Some(track) = self.lrc_studio.current_track() else {
+            return;
+        };
+        let track_id = track.id;
+        let source = PathBuf::from(&track.info.path);
+        if self.lrc_studio.loading_preview_id == Some(track_id) {
+            return;
+        }
+        if track
+            .wav_preview
+            .as_ref()
+            .is_some_and(|preview| preview.path().is_file())
+        {
+            self.lrc_studio.start_playback();
+            return;
+        }
+        if !self.ffmpeg_ready {
+            self.warn("Menunggu FFmpeg siap untuk menyiapkan preview Lirik.");
+            return;
+        }
+        self.lrc_studio.stop_playback();
+        if self.audio_preview_session.is_none() {
+            match loopkaraoke::karaoke::preview::PreviewSession::new(&self.paths.temp) {
+                Ok(session) => self.audio_preview_session = Some(session),
+                Err(error) => {
+                    self.error(format!("Gagal menyiapkan folder preview Lirik: {error}"));
+                    return;
+                }
+            }
+        }
+        let preview = self.audio_preview_session.as_ref().unwrap().create_file();
+        self.lrc_studio.loading_preview_id = Some(track_id);
+        let request_id = self.lrc_studio.preview_request_id;
+        let tools = self.tools.clone();
+        self.spawn(async move {
+            let mut command = tools.ffmpeg();
+            command
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+                .arg(&source)
+                .args(["-vn", "-ac", "2", "-ar", "44100", "-acodec", "pcm_s16le"])
+                .arg(preview.path());
+            let result =
+                match loopkaraoke::ffmpeg::run(&mut command, "FFmpeg (preview Lirik)").await {
+                    Ok(_) if preview.path().is_file() => Ok(preview),
+                    Ok(_) => Err(loopkaraoke::error::Error::internal(
+                        "File preview Lirik tidak terbentuk.",
+                    )),
+                    Err(error) => Err(error),
+                };
+            Event::StandalonePreview {
+                track_id,
+                request_id,
+                result,
+            }
+        });
+    }
+
     fn transcribe_standalone_track(&mut self, index: usize) {
+        if self.dependencies.operation.is_some() {
+            self.warn("Tunggu pengelolaan dependensi selesai sebelum transkripsi.");
+            return;
+        }
         let Some(track) = self.lrc_studio.tracks.get_mut(index) else {
             return;
         };
@@ -2644,7 +2818,14 @@ impl StudioApp {
     }
 
     fn export_standalone_lrc_file(&mut self) {
-        let Some(track) = self.lrc_studio.current_track() else {
+        if let Some(last) = self.lrc_studio.tracks.len().checked_sub(1) {
+            let index = self.lrc_studio.selected_track.min(last);
+            self.export_lrc_track(index);
+        }
+    }
+
+    fn export_lrc_track(&mut self, index: usize) {
+        let Some(track) = self.lrc_studio.tracks.get(index) else {
             return;
         };
         if track.lines.is_empty() {
@@ -2657,9 +2838,6 @@ impl StudioApp {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&track.title);
         let default_name = format!("{stem}.lrc");
-        let content = format_lrc_lines(&track.lines);
-        let line_count = track.lines.len();
-
         let mut dialog = rfd::FileDialog::new()
             .add_filter("LRC Lyrics (*.lrc)", &["lrc"])
             .set_file_name(&default_name);
@@ -2670,20 +2848,69 @@ impl StudioApp {
         let Some(path) = picked else {
             return;
         };
-        match std::fs::write(&path, content) {
+        match self.write_lrc_track(index, &path) {
             Ok(()) => {
-                if let Some(trk) = self.lrc_studio.current_track_mut() {
-                    trk.saved_lrc_path = Some(path.clone());
-                }
-                for track in &mut self.generate.tracks {
-                    if track.path == audio_path {
-                        track.lrc = Some((path.clone(), line_count));
-                    }
-                }
                 self.info(format!("Berkas .LRC berhasil disimpan: {}", path.display()));
             }
             Err(error) => self.error(format!("Gagal menyimpan berkas .LRC: {error}")),
         }
+    }
+
+    fn export_all_lrc_tracks(&mut self, indices: &[usize]) {
+        let Some(folder) = rfd::FileDialog::new()
+            .set_title("Folder untuk semua LRC")
+            .pick_folder()
+        else {
+            return;
+        };
+        let mut names = std::collections::HashSet::new();
+        let mut saved = 0;
+        let mut failed = 0;
+        for &index in indices {
+            let track = &self.lrc_studio.tracks[index];
+            let stem = std::path::Path::new(&track.info.path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Lirik");
+            let mut name = format!("{stem}.lrc");
+            for number in 2.. {
+                if names.insert(name.to_lowercase()) {
+                    break;
+                }
+                name = format!("{stem} ({number}).lrc");
+            }
+            let path = folder.join(name);
+            match self.write_lrc_track(index, &path) {
+                Ok(()) => saved += 1,
+                Err(error) => {
+                    failed += 1;
+                    self.log(
+                        super::LogLevel::Error,
+                        format!("{}: {error}", path.display()),
+                    );
+                }
+            }
+        }
+        if failed > 0 {
+            self.warn(format!(
+                "{saved} LRC disimpan, {failed} gagal. Lihat detail di log."
+            ));
+        } else {
+            self.info(format!("{saved} LRC disimpan di {}", folder.display()));
+        }
+    }
+
+    fn write_lrc_track(&mut self, index: usize, path: &std::path::Path) -> std::io::Result<()> {
+        let track = &mut self.lrc_studio.tracks[index];
+        std::fs::write(path, format_lrc_lines(&track.lines))?;
+        self.karaoke_preview_lrc = None;
+        track.saved_lrc_path = Some(path.to_owned());
+        for generate_track in &mut self.generate.tracks {
+            if generate_track.path == std::path::Path::new(&track.info.path) {
+                generate_track.lrc = Some((path.to_owned(), track.lines.len()));
+            }
+        }
+        Ok(())
     }
 
     // =========================================================================
@@ -2691,10 +2918,6 @@ impl StudioApp {
     // =========================================================================
 
     pub(super) fn style_section(&mut self, ui: &mut egui::Ui) {
-        theme::strong_with_info(ui, "Gaya teks karaoke", help::STYLE);
-        self.style_preview(ui);
-        ui.add_space(4.0);
-
         ui.horizontal_wrapped(|ui| {
             for (index, (_, theme)) in THEMES.iter().enumerate() {
                 if ui
@@ -2708,6 +2931,33 @@ impl StudioApp {
         });
         ui.horizontal_wrapped(|ui| {
             theme::label_with_info(ui, "Font Lirik:", help::FONT_CHOICE);
+            let palette = theme::Palette::of(ui.ctx());
+            egui::Frame::new()
+                .fill(palette.bg)
+                .stroke(egui::Stroke::new(1.0_f32, palette.border))
+                .corner_radius(8)
+                .show(ui, |ui| {
+                    use super::generate_tab::{draw_stepper_button, paint_vertical_divider};
+
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let size = &mut self.style.font_size;
+                        if draw_stepper_button(ui, false, *size > 20, &palette, true).clicked() {
+                            *size -= 1;
+                        }
+                        paint_vertical_divider(ui, palette.border);
+                        ui.add_sized(
+                            [58.0, theme::metrics::CONTROL_HEIGHT - 2.0],
+                            egui::DragValue::new(size).range(20..=120).suffix(" px"),
+                        )
+                        .on_hover_text(help::FONT_SIZE);
+                        paint_vertical_divider(ui, palette.border);
+                        if draw_stepper_button(ui, true, *size < 120, &palette, false).clicked() {
+                            *size += 1;
+                        }
+                    });
+                });
+
             let current_font_label = if let Some(path) = &self.style.custom_font {
                 path.file_name()
                     .unwrap_or_default()
@@ -2763,24 +3013,26 @@ impl StudioApp {
                 self.reload_egui_fonts();
             }
         });
-        ui.scope(|ui| {
-            theme::control_slider(
-                ui,
-                "Ukuran font",
-                &mut self.style.font_size,
-                20..=120,
-                " px",
-                0,
-                None,
-                true,
-            )
-        })
-        .response
-        .on_hover_text(help::FONT_SIZE);
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            theme::label_with_info(ui, "Posisi Karaoke (Slider X & Y):", help::POSITION);
-        });
+        ui.separator();
+        // The settings card itself is half-width in the maximized layout.
+        if ui.available_width() >= 560.0 {
+            ui.columns(2, |columns| {
+                self.karaoke_position_style(&mut columns[0]);
+                self.karaoke_advanced_style(&mut columns[1]);
+            });
+        } else {
+            self.karaoke_position_style(ui);
+            self.karaoke_advanced_style(ui);
+        }
+        ui.add_space(4.0);
+        ui.separator();
+        self.karaoke_intro_style(ui);
+    }
+
+    fn karaoke_position_style(&mut self, ui: &mut egui::Ui) {
+        ui.label("Posisi Karaoke (Slider X & Y):")
+            .on_hover_text(help::POSITION);
         ui.horizontal_wrapped(|ui| {
             ui.label("Preset Cepat:");
             if ui
@@ -2814,128 +3066,267 @@ impl StudioApp {
                 self.style.alignment = 8;
             }
         });
-        if theme::control_slider(
+        if theme::control_slider_reset(
             ui,
             "Posisi X (Horizontal)",
             &mut self.style.pos_x,
             0.0..=100.0,
             "%",
-            0,
-            Some("Reset 50%"),
-            true,
+            "Reset ke 50%",
         ) {
             self.style.pos_x = 50.0;
         }
-        if theme::control_slider(
+        if theme::control_slider_reset(
             ui,
             "Posisi Y (Vertikal)",
             &mut self.style.pos_y,
             0.0..=100.0,
             "%",
-            0,
-            Some("Reset 85%"),
-            true,
+            "Reset ke 85%",
         ) {
             self.style.pos_y = 85.0;
         }
-        egui::CollapsingHeader::new("Pengaturan lanjutan")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    theme::info(ui, help::COLORS);
-                    ui.label("Normal");
-                    ui.color_edit_button_srgb(&mut self.style.normal);
-                    ui.label("Bernyanyi");
-                    ui.color_edit_button_srgb(&mut self.style.singing);
-                    ui.label("Tepi");
-                    ui.color_edit_button_srgb(&mut self.style.outline);
-                    ui.label("Bayangan");
-                    ui.color_edit_button_srgb(&mut self.style.shadow);
-                });
-                ui.scope(|ui| {
-                    theme::control_slider(
-                        ui,
-                        "Jarak dari tepi (Margin)",
-                        &mut self.style.margin_v,
-                        0..=300,
-                        " px",
-                        0,
-                        None,
-                        true,
-                    )
-                })
-                .response
-                .on_hover_text(help::MARGIN);
-                ui.horizontal_wrapped(|ui| {
-                    theme::label_with_info(ui, "Efek wipe:", help::WIPE);
-                    ui.radio_value(&mut self.style.smooth_wipe, true, "Halus");
-                    ui.radio_value(&mut self.style.smooth_wipe, false, "Per kata");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(
-                        &mut self.style.show_intro,
-                        "Banner judul & penyanyi di awal",
-                    );
-                    theme::info(ui, help::INTRO);
-                });
-            });
     }
 
-    /// A small mock frame that shows the chosen colors, size and position before rendering.
-    pub(super) fn style_preview(&self, ui: &mut egui::Ui) {
-        const SAMPLE: &str = "Contoh lirik karaoke";
-        let style = &self.style;
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), PREVIEW_HEIGHT),
-            egui::Sense::hover(),
-        );
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(0x12, 0x18, 0x2a));
-
-        let color = |rgb: [u8; 3]| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-        let font_family = if style.custom_font.is_some() {
-            egui::FontFamily::Name("karaoke_custom".into())
-        } else {
-            let choice_id = KARAOKE_FONTS[style.font_preset.min(KARAOKE_FONTS.len() - 1)].id;
-            if choice_id == "inter-semibold" {
-                egui::FontFamily::Proportional
-            } else {
-                egui::FontFamily::Name(choice_id.into())
+    fn karaoke_advanced_style(&mut self, ui: &mut egui::Ui) {
+        ui.label("Pengaturan lanjutan");
+        ui.horizontal_wrapped(|ui| {
+            theme::info(ui, help::COLORS);
+            for (label, color) in [
+                ("Normal", &mut self.style.normal),
+                ("Bernyanyi", &mut self.style.singing),
+                ("Tepi", &mut self.style.outline),
+                ("Bayangan", &mut self.style.shadow),
+            ] {
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let label_width = ui.fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap(label.to_owned(), font, ui.visuals().text_color())
+                        .size()
+                        .x
+                });
+                let group_width =
+                    label_width.ceil() + ui.spacing().item_spacing.x + ui.spacing().interact_size.x;
+                if group_width > ui.available_size_before_wrap().x {
+                    ui.end_row();
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(label).wrap_mode(egui::TextWrapMode::Extend));
+                    ui.color_edit_button_srgb(color);
+                });
             }
-        };
-        let font = egui::FontId::new(
-            (style.font_size as f32 * 0.45).clamp(10.0, 44.0),
-            font_family,
-        );
-        let galley =
-            |rgb: [u8; 3]| painter.layout_no_wrap(SAMPLE.to_owned(), font.clone(), color(rgb));
-        let base = galley(style.normal);
-
-        let center_x = rect.left() + rect.width() * (style.pos_x.clamp(0.0, 100.0) / 100.0);
-        let center_y = rect.top() + rect.height() * (style.pos_y.clamp(0.0, 100.0) / 100.0);
-        let origin = egui::pos2(
-            center_x - base.size().x / 2.0,
-            center_y - base.size().y / 2.0,
-        );
-
-        let outline = color(style.outline);
-        for offset in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-            let shadow = painter.layout_no_wrap(SAMPLE.to_owned(), font.clone(), outline);
-            painter.galley(origin + egui::vec2(offset.0, offset.1), shadow, outline);
+        });
+        let default_margin = super::StyleState::from_theme(&THEMES[0].1).margin_v;
+        let margin = ui.scope(|ui| {
+            theme::control_slider_reset(
+                ui,
+                "Jarak dari tepi (Margin)",
+                &mut self.style.margin_v,
+                0..=300,
+                " px",
+                &format!("Reset ke {default_margin} px"),
+            )
+        });
+        margin.response.on_hover_text(help::MARGIN);
+        if margin.inner {
+            self.style.margin_v = default_margin;
         }
-        painter.galley(origin, base.clone(), color(style.normal));
+        ui.horizontal_wrapped(|ui| {
+            theme::label_with_info(ui, "Efek wipe:", help::WIPE);
+            for (smooth, label) in [(true, "Halus"), (false, "Per kata")] {
+                if ui
+                    .add(
+                        theme::StyledButton::secondary(label)
+                            .selected(self.style.smooth_wipe == smooth),
+                    )
+                    .clicked()
+                {
+                    self.style.smooth_wipe = smooth;
+                }
+            }
+        });
+    }
 
-        let sung =
-            egui::Rect::from_min_size(origin, egui::vec2(base.size().x * 0.45, base.size().y));
-        painter
-            .with_clip_rect(sung)
-            .galley(origin, galley(style.singing), color(style.singing));
+    fn karaoke_intro_style(&mut self, ui: &mut egui::Ui) {
+        ui.label("Banner Pembuka");
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut self.style.show_intro, "Tampilkan judul dan penyanyi");
+            theme::info(ui, help::INTRO);
+        });
+        if self.style.show_intro {
+            ui.muted_label("Preview Karaoke menampilkan banner untuk penyetelan. Render Old menampilkannya selama 5 detik di awal setiap lagu.");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Font Banner");
+                egui::ComboBox::from_id_salt("karaoke_intro_font")
+                    .selected_text(KARAOKE_FONTS[self.style.intro_font_preset].label)
+                    .show_ui(ui, |ui| {
+                        for (index, font) in KARAOKE_FONTS.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.style.intro_font_preset,
+                                index,
+                                font.label,
+                            );
+                        }
+                    });
+                ui.label("Ukuran");
+                ui.add(
+                    egui::DragValue::new(&mut self.style.intro_banner.size)
+                        .range(20..=120)
+                        .suffix(" px"),
+                );
+                ui.label("Warna");
+                ui.color_edit_button_srgb(&mut self.style.intro_banner.color);
+            });
+            let banner = &mut self.style.intro_banner;
+            if theme::control_slider_reset(
+                ui,
+                "Posisi X Banner",
+                &mut banner.x,
+                0.0..=100.0,
+                "%",
+                "Reset ke 50%",
+            ) {
+                banner.x = 50.0;
+            }
+            if theme::control_slider_reset(
+                ui,
+                "Posisi Y Banner",
+                &mut banner.y,
+                0.0..=100.0,
+                "%",
+                "Reset ke 15%",
+            ) {
+                banner.y = 15.0;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod studio_tests {
     use super::*;
+
+    fn fixture_audio(path: &std::path::Path) -> AudioInfo {
+        AudioInfo {
+            path: path.to_string_lossy().into_owned(),
+            filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+            title: "Test track".into(),
+            artist: String::new(),
+            duration: 60.0,
+            duration_str: "1:00".into(),
+            size_bytes: 0,
+            size_mb: 0.0,
+        }
+    }
+
+    #[test]
+    fn imported_tracks_have_no_preview_and_pending_playback_is_invalidated_on_switch_or_stop() {
+        let mut studio = StandaloneLyricsState::default();
+        studio.add_audio_track(fixture_audio(std::path::Path::new("first.mp3")), None);
+        studio.add_audio_track(fixture_audio(std::path::Path::new("second.m4a")), None);
+        assert!(studio
+            .tracks
+            .iter()
+            .all(|track| track.wav_preview.is_none()));
+        assert_eq!(studio.tracks[0].info.path, "first.mp3");
+        let first_id = studio.tracks[0].id;
+        let request_id = studio.preview_request_id;
+        studio.loading_preview_id = Some(first_id);
+        assert!(studio.preview_request_matches(first_id, request_id));
+        studio.seek_to(12.0);
+        assert!(studio.preview_request_matches(first_id, request_id));
+        assert!(!studio.playing);
+        studio.select_track(1);
+        assert!(!studio.preview_request_matches(first_id, request_id));
+        assert!(studio.loading_preview_id.is_none());
+        let second_id = studio.tracks[1].id;
+        studio.loading_preview_id = Some(second_id);
+        let request_id = studio.preview_request_id;
+        studio.stop_playback();
+        assert!(!studio.preview_request_matches(second_id, request_id));
+        studio.start_playback();
+        assert!(
+            !studio.playing,
+            "No silent playback timer without a ready preview"
+        );
+    }
+
+    #[test]
+    fn removing_and_clearing_tracks_release_previews_but_preserve_original_audio() {
+        let root = std::env::temp_dir().join(format!("studio-cleanup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let session =
+            loopkaraoke::karaoke::preview::PreviewSession::new(&root.join("temp")).unwrap();
+        let a = root.join("a.mp3");
+        let b = root.join("b.m4a");
+        std::fs::write(&a, b"original mp3").unwrap();
+        std::fs::write(&b, b"original m4a").unwrap();
+        let preview_a = session.create_file();
+        let preview_b = session.create_file();
+        let path_a = preview_a.path().to_path_buf();
+        let path_b = preview_b.path().to_path_buf();
+        std::fs::write(&path_a, b"preview a").unwrap();
+        std::fs::write(&path_b, b"preview b").unwrap();
+        let mut studio = StandaloneLyricsState::default();
+        studio.add_audio_track(fixture_audio(&a), Some(preview_a));
+        studio.add_audio_track(fixture_audio(&b), Some(preview_b));
+        studio.selected_track = 1;
+        studio.current_time = 12.0;
+        let selected_id = studio.current_track().unwrap().id;
+        studio.remove_track(0);
+        assert!(!path_a.exists());
+        assert!(path_b.exists());
+        assert_eq!(studio.current_track().unwrap().id, selected_id);
+        assert_eq!(studio.current_time, 12.0);
+        studio.clear_tracks();
+        assert!(!path_b.exists());
+        assert!(studio.tracks.is_empty());
+        assert_eq!(studio.current_time, 0.0);
+        assert_eq!(std::fs::read(&a).unwrap(), b"original mp3");
+        assert_eq!(std::fs::read(&b).unwrap(), b"original m4a");
+        drop(studio);
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dropping_unreceived_preview_results_removes_preview_output() {
+        let root = std::env::temp_dir().join(format!("studio-event-{}", uuid::Uuid::new_v4()));
+        let session = loopkaraoke::karaoke::preview::PreviewSession::new(&root).unwrap();
+        let preview = session.create_file();
+        let path = preview.path().to_path_buf();
+        std::fs::write(&path, b"queued preview").unwrap();
+        let event = Event::StandalonePreview {
+            track_id: 1,
+            request_id: 1,
+            result: Ok(preview),
+        };
+        drop(event);
+        assert!(!path.exists());
+        drop(session);
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn repeated_imports_skip_loaded_files_and_duplicate_paths_in_the_same_batch() {
+        let root = std::env::temp_dir().join(format!("studio-dedup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let loaded = root.join("loaded.mp3");
+        let new = root.join("new.m4a");
+        std::fs::write(&loaded, b"loaded").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        let paths = unique_standalone_audio_paths(
+            std::slice::from_ref(&loaded),
+            vec![
+                loaded.clone(),
+                new.clone(),
+                root.join(".").join("new.m4a"),
+                new.clone(),
+            ],
+        );
+        assert_eq!(paths, vec![new]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imported_studio_audio_loads_companion_lrc_and_raw_text() {

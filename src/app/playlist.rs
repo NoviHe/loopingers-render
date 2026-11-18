@@ -10,7 +10,7 @@ impl StudioApp {
         let mut cfg = self.style.to_config();
         let enable_karaoke = self.show_karaoke_lyrics && self.has_any_track_lyrics();
         cfg.show_lyrics = Some(enable_karaoke);
-        cfg.show_intro = Some(enable_karaoke && self.style.show_intro);
+        cfg.show_intro = Some(self.style.show_intro);
         cfg.show_tracklist = Some(false);
         cfg.tracklist_position = Some(self.tracklist_position);
         cfg.tracklist_font_size = Some(self.thumbnail.track_size);
@@ -43,7 +43,7 @@ impl StudioApp {
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(
                     &mut self.show_karaoke_lyrics,
-                    "Tambahkan karaoke di video (tampilkan lirik lagu)",
+                    "Aktifkan lirik karaoke saat render",
                 )
                 .on_hover_text(
                     "Tampilkan teks lirik karaoke pada video untuk lagu yang memiliki berkas LRC / lirik",

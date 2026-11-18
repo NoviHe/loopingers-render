@@ -3,14 +3,23 @@ mod batch_render_tab;
 mod dashboard_tab;
 mod generate_tab;
 mod help;
+mod liquid_ring_gpu;
+mod liquid_ring_motion;
 mod lyrics;
 mod playlist;
 mod playlist_tools_tab;
+mod project_outputs;
 mod quick_tab;
 mod render_tab;
+mod spectrum_overlay;
+mod spectrum_styles;
 mod storage_tab;
 pub mod theme;
 mod thumbnail_tab;
+mod visualizer_playback;
+mod visualizer_playlist;
+mod visualizer_preview_layers;
+mod visualizer_settings;
 mod visualizer_tab;
 
 use std::{
@@ -22,13 +31,16 @@ use std::{
 
 use eframe::egui;
 use loopkaraoke::{
-    config::{AppPaths, AppSettings},
+    config::{
+        AppPaths, AppSettings, KaraokeBannerSettings, KaraokeLyricStyleSettings, KaraokeSettings,
+        PagePinSettings,
+    },
     demo::DemoSet,
     error::Result,
     ffmpeg::{self, DownloadProgress, Tools},
     hardware::HardwareInfo,
     karaoke::{
-        ass::{PlaylistDisplayMode, StyleConfig, TracklistPosition},
+        ass::{StyleConfig, TracklistPosition},
         styles::{Theme, THEMES},
         transcribe::Transcriber,
         LyricLine,
@@ -62,6 +74,7 @@ const FALLBACK_FONTS: [&str; 7] = [
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Tab {
     Dashboard,
+    Project,
     Quick,
     Generate,
     BatchRender,
@@ -78,10 +91,11 @@ impl Tab {
         matches!(self, Self::Generate | Self::Playlist)
     }
 
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Dashboard,
         Self::Generate,
         Self::BatchRender,
+        Self::Project,
         Self::Playlist,
         Self::Thumbnail,
         Self::Lyrics,
@@ -94,6 +108,7 @@ impl Tab {
     fn help(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard: mulai membuat video full album dan lihat ringkasan project Generate.",
+            Self::Project => "Galeri Render: lihat dan buka video serta thumbnail Generate dan Batch.",
             Self::Quick => {
                 "Render Old: alur kerja terpadu input video/gambar, audio, lirik, dan render cepat."
             }
@@ -112,27 +127,10 @@ impl Tab {
         }
     }
 
-    /// The next step of the main workflow, if this tab is part of it.
-    fn next(self) -> Option<Self> {
-        match self {
-            Self::Quick | Self::Generate | Self::BatchRender | Self::Lyrics | Self::Karaoke => None,
-            Self::Playlist => None,
-            Self::Visualizer => Some(Self::Quick),
-            _ => None,
-        }
-    }
-
-    fn previous(self) -> Option<Self> {
-        match self {
-            Self::Playlist => None,
-            Self::Visualizer => Some(Self::Quick),
-            _ => None,
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard",
+            Self::Project => "Galeri Render",
             Self::Quick => "Render Old",
             Self::Generate => "Generate",
             Self::BatchRender => "Batch Render",
@@ -148,6 +146,7 @@ impl Tab {
     fn icon(self) -> theme::SidebarIcon {
         match self {
             Self::Dashboard => theme::SidebarIcon::Dashboard,
+            Self::Project => theme::SidebarIcon::Project,
             Self::Quick => theme::SidebarIcon::RenderOld,
             Self::Generate => theme::SidebarIcon::Generate,
             Self::BatchRender => theme::SidebarIcon::BatchRender,
@@ -163,11 +162,18 @@ impl Tab {
 
 /// Results that background tasks hand back to the UI thread.
 enum Event {
+    RenderStorageFull(String),
+    BatchRenderDiagnostic(LogLevel, String),
     Ffmpeg(Result<Tools>),
     Hardware(HardwareInfo),
     Background(Result<Background>),
     Audios(Vec<Result<AudioInfo>>),
-    StandaloneAudios(Vec<(Result<AudioInfo>, Option<PathBuf>)>),
+    StandaloneAudios(Vec<Result<AudioInfo>>),
+    StandalonePreview {
+        track_id: u32,
+        request_id: u64,
+        result: Result<loopkaraoke::karaoke::preview::PreviewFile>,
+    },
     StandaloneLyrics {
         track_id: u32,
         result: Result<Vec<LyricLine>>,
@@ -182,9 +188,29 @@ enum Event {
     GenerateAudios(Vec<Result<AudioInfo>>),
     GeneratePreview {
         track_id: u32,
-        result: Result<PathBuf>,
+        request_id: u64,
+        result: Result<loopkaraoke::karaoke::preview::PreviewFile>,
+    },
+    VisualizerPreview {
+        track_id: u32,
+        request_id: u64,
+        result: Result<loopkaraoke::karaoke::preview::PreviewFile>,
+    },
+    SpectrumAnalyzed {
+        track_id: u32,
+        request_id: u64,
+        result: Result<loopkaraoke::spectrum::SpectrumData>,
     },
     Storage(StorageStats),
+    Dependencies(loopkaraoke::dependencies::DependencyReport),
+    DependencyTools {
+        directory: Option<PathBuf>,
+        result: Result<Tools>,
+    },
+    DependencyModel {
+        result: Result<()>,
+        message: String,
+    },
     Cleaned(String),
 }
 
@@ -269,6 +295,8 @@ struct StyleState {
     pos_y: f32,
     smooth_wipe: bool,
     show_intro: bool,
+    intro_banner: loopkaraoke::karaoke::ass::IntroBanner,
+    intro_font_preset: usize,
 }
 
 fn rgb(hex: &str) -> [u8; 3] {
@@ -296,6 +324,14 @@ impl StyleState {
             pos_y: 85.0,
             smooth_wipe: true,
             show_intro: false,
+            intro_banner: loopkaraoke::karaoke::ass::IntroBanner {
+                font: String::new(),
+                size: 48,
+                color: [255, 255, 255],
+                x: 50.0,
+                y: 15.0,
+            },
+            intro_font_preset: 0,
         }
     }
 
@@ -321,6 +357,10 @@ impl StyleState {
             pos_x: Some(self.pos_x),
             pos_y: Some(self.pos_y),
             show_intro: Some(self.show_intro),
+            intro_banner: Some(loopkaraoke::karaoke::ass::IntroBanner {
+                font: lyrics::karaoke_font_ass_name(self.intro_font_preset, &None),
+                ..self.intro_banner.clone()
+            }),
             wipe_mode: Some(if self.smooth_wipe { "smooth" } else { "jump" }.to_owned()),
             ..Default::default()
         }
@@ -328,6 +368,7 @@ impl StyleState {
 }
 
 pub struct StudioApp {
+    project_outputs: project_outputs::OutputUiState,
     ctx: egui::Context,
     paths: AppPaths,
     tools: Tools,
@@ -368,25 +409,34 @@ pub struct StudioApp {
     pub custom_filename: String,
     pub quick_selected_track: Option<usize>,
     pub auto_generate_thumbnail: bool,
-    pub(super) playlist_mode: PlaylistDisplayMode,
     pub(super) show_tracklist_visual: bool,
     pub(super) show_karaoke_lyrics: bool,
     pub(super) karaoke_preview_text: String,
+    karaoke_preview_pinned: bool,
+    visualizer_preview_pinned: bool,
+    thumbnail_preview_pinned: bool,
+    lyrics_header_pinned: bool,
+    playlist_header_pinned: bool,
+    karaoke_preview_lrc: Option<(PathBuf, Vec<loopkaraoke::karaoke::LyricLine>)>,
     pub(super) tracklist_position: TracklistPosition,
-    pub(super) tracklist_font_size: u32,
-    pub(super) tracklist_title: String,
     pub(super) generate: generate_tab::GenerateState,
     pub(super) batch_render: batch_render_tab::BatchRenderState,
     pub(super) thumbnail: thumbnail_tab::ThumbnailState,
-    pub(super) visualizer: loopkaraoke::visualizer::VisualizerSpec,
+    spectrum_overlay: spectrum_overlay::SpectrumOverlayState,
+    visualizer_preview: visualizer_preview_layers::VisualizerPreviewState,
     pub(super) visualizer_playing: bool,
     pub(super) visualizer_time: f64,
     pub(super) visualizer_selected_track: usize,
     pub(super) visualizer_volume: f32,
-    pub(super) visualizer_active_tab: usize,
-    pub(super) visualizer_particles: Vec<visualizer_tab::VisualizerParticle>,
+    pub(super) visualizer_volume_popup_open: bool,
+    pub(super) visualizer_loading_preview: Option<u32>,
+    pub(super) visualizer_preview_request: u64,
+    pub(super) visualizer_active_track_id: Option<u32>,
     pub(super) lrc_studio: lyrics::StandaloneLyricsState,
+    audio_preview_session: Option<loopkaraoke::karaoke::preview::PreviewSession>,
     storage: Option<StorageStats>,
+    dependency_settings: loopkaraoke::config::DependencySettings,
+    dependencies: storage_tab::DependencyUiState,
     logs: Vec<LogEntry>,
     show_logs: bool,
     log_auto_scroll: bool,
@@ -394,8 +444,16 @@ pub struct StudioApp {
     sidebar_compact: bool,
     pub(super) dark_mode: bool,
     pub(super) video_settings: VideoRenderSettings,
+    storage_full_message: Option<String>,
     last_job_status: Option<JobStatus>,
     last_job_milestone: u32,
+}
+
+impl Drop for StudioApp {
+    fn drop(&mut self) {
+        // Release MCI's handle before either playlist's owned preview files drop.
+        lyrics::win_audio::stop();
+    }
 }
 
 impl StudioApp {
@@ -407,6 +465,7 @@ impl StudioApp {
         transcriber: Arc<Transcriber>,
     ) -> Self {
         let settings = AppSettings::load(&paths);
+        let whisper_model = settings.settings.dependencies.selected_whisper_model();
         ctx.set_theme(if settings.dark_mode {
             egui::ThemePreference::Dark
         } else {
@@ -419,8 +478,14 @@ impl StudioApp {
             .unwrap_or("1080p");
         let fps = if settings.fps == 60 { 60 } else { 30 };
 
+        let audio_preview_session = loopkaraoke::karaoke::preview::PreviewSession::new(&paths.temp);
+        let preview_error = audio_preview_session
+            .as_ref()
+            .err()
+            .map(ToString::to_string);
         let (sender, events) = mpsc::channel();
         let mut app = Self {
+            project_outputs: project_outputs::OutputUiState::default(),
             ctx,
             paths,
             tools,
@@ -445,8 +510,31 @@ impl StudioApp {
             beat_pulse: false,
             visual_effect: 0,
             tracks: Vec::new(),
-            theme: 0,
-            style: StyleState::from_theme(&THEMES[0].1),
+            theme: settings.karaoke.lyric_style.theme.min(THEMES.len() - 1),
+            style: {
+                let mut style = StyleState::from_theme(&THEMES[0].1);
+                let saved = &settings.karaoke.lyric_style;
+                style.normal = saved.normal;
+                style.singing = saved.singing;
+                style.outline = saved.outline;
+                style.shadow = saved.shadow;
+                style.font_size = saved.font_size.clamp(20, 120);
+                style.font_preset = saved.font_preset.min(lyrics::KARAOKE_FONTS.len() - 1);
+                style.custom_font = saved.custom_font.clone().filter(|path| path.is_file());
+                style.alignment = saved.alignment.clamp(1, 9);
+                style.margin_v = saved.margin.clamp(0, 300);
+                style.pos_x = saved.x.clamp(0.0, 100.0);
+                style.pos_y = saved.y.clamp(0.0, 100.0);
+                style.smooth_wipe = saved.smooth_wipe;
+                let banner = settings.karaoke.banner;
+                style.show_intro = banner.enabled;
+                style.intro_font_preset = banner.font_preset.min(lyrics::KARAOKE_FONTS.len() - 1);
+                style.intro_banner.size = banner.size.clamp(20, 120);
+                style.intro_banner.color = banner.color;
+                style.intro_banner.x = banner.x.clamp(0.0, 100.0);
+                style.intro_banner.y = banner.y.clamp(0.0, 100.0);
+                style
+            },
             resolution,
             fps,
             encoder: Encoder::CpuX264,
@@ -456,25 +544,41 @@ impl StudioApp {
             custom_filename: String::new(),
             quick_selected_track: None,
             auto_generate_thumbnail: settings.auto_generate_thumbnail,
-            playlist_mode: PlaylistDisplayMode::Both,
             show_tracklist_visual: true,
             show_karaoke_lyrics: true,
-            karaoke_preview_text: String::new(),
+            karaoke_preview_text: settings.karaoke.preview_text,
+            karaoke_preview_pinned: settings.page_pins.karaoke,
+            visualizer_preview_pinned: settings.page_pins.visualizer,
+            thumbnail_preview_pinned: settings.page_pins.thumbnail,
+            lyrics_header_pinned: settings.page_pins.lyrics,
+            playlist_header_pinned: settings.page_pins.playlist,
+            karaoke_preview_lrc: None,
             tracklist_position: TracklistPosition::TopLeft,
-            tracklist_font_size: 26,
-            tracklist_title: "DAFTAR LAGU".to_owned(),
-            generate: generate_tab::GenerateState::from_settings(&settings.generate),
+            generate: generate_tab::GenerateState {
+                output_dir: settings.settings.storage.output_dir,
+                ..generate_tab::GenerateState::from_settings(&settings.generate)
+            },
             batch_render: batch_render_tab::BatchRenderState::default(),
             thumbnail: thumbnail_tab::ThumbnailState::default(),
-            visualizer: loopkaraoke::visualizer::VisualizerSpec::default(),
+            spectrum_overlay: spectrum_overlay::SpectrumOverlayState::new(
+                settings.visualizer.spectrum,
+            ),
+            visualizer_preview: visualizer_preview_layers::VisualizerPreviewState::new(
+                settings.visualizer.preview,
+            ),
             visualizer_playing: false,
             visualizer_time: 0.0,
             visualizer_selected_track: 0,
             visualizer_volume: 100.0,
-            visualizer_active_tab: 0,
-            visualizer_particles: Vec::new(),
+            visualizer_volume_popup_open: false,
+            visualizer_loading_preview: None,
+            visualizer_preview_request: 0,
+            visualizer_active_track_id: None,
             lrc_studio: lyrics::StandaloneLyricsState::default(),
+            audio_preview_session: audio_preview_session.ok(),
             storage: None,
+            dependency_settings: settings.settings.dependencies,
+            dependencies: storage_tab::DependencyUiState::default(),
             logs: vec![LogEntry {
                 time: chrono::Local::now().format("%H:%M:%S").to_string(),
                 level: LogLevel::Info,
@@ -485,23 +589,89 @@ impl StudioApp {
             log_height: 84.0,
             sidebar_compact: false,
             dark_mode: settings.dark_mode,
-            video_settings: settings.video,
+            video_settings: settings.settings.video,
+            storage_full_message: None,
             last_job_status: None,
             last_job_milestone: 0,
         };
+        app.lrc_studio.whisper_model = whisper_model;
+        if app.style.custom_font.is_some() {
+            app.reload_egui_fonts();
+        }
         app.sync_encoder_with_video_settings();
+        if let Some(error) = preview_error {
+            app.warn(format!("Folder preview audio belum siap: {error}"));
+        }
         app.start_up();
         app
     }
 
+    fn karaoke_banner_settings(&self) -> KaraokeBannerSettings {
+        let banner = &self.style.intro_banner;
+        KaraokeBannerSettings {
+            enabled: self.style.show_intro,
+            font_preset: self.style.intro_font_preset,
+            size: banner.size,
+            color: banner.color,
+            x: banner.x,
+            y: banner.y,
+        }
+    }
+
+    fn page_pin_settings(&self) -> PagePinSettings {
+        PagePinSettings {
+            karaoke: self.karaoke_preview_pinned,
+            visualizer: self.visualizer_preview_pinned,
+            thumbnail: self.thumbnail_preview_pinned,
+            lyrics: self.lyrics_header_pinned,
+            playlist: self.playlist_header_pinned,
+        }
+    }
+
+    fn karaoke_settings(&self) -> KaraokeSettings {
+        KaraokeSettings {
+            lyric_style: KaraokeLyricStyleSettings {
+                theme: self.theme,
+                normal: self.style.normal,
+                singing: self.style.singing,
+                outline: self.style.outline,
+                shadow: self.style.shadow,
+                font_size: self.style.font_size,
+                font_preset: self.style.font_preset,
+                custom_font: self.style.custom_font.clone(),
+                alignment: self.style.alignment,
+                margin: self.style.margin_v,
+                x: self.style.pos_x,
+                y: self.style.pos_y,
+                smooth_wipe: self.style.smooth_wipe,
+            },
+            banner: self.karaoke_banner_settings(),
+            preview_text: self.karaoke_preview_text.clone(),
+        }
+    }
+
     pub(super) fn save_settings(&mut self) {
+        let mut dependencies = self.dependency_settings.clone();
+        dependencies.whisper_model = Some(self.lrc_studio.whisper_model.name().to_owned());
         let settings = AppSettings {
+            settings: loopkaraoke::config::SettingsPage {
+                video: self.video_settings,
+                storage: loopkaraoke::config::StorageSettings {
+                    output_dir: self.generate.output_dir.clone(),
+                },
+                dependencies,
+            },
             dark_mode: self.dark_mode,
-            video: self.video_settings,
             resolution: self.resolution.to_owned(),
             fps: self.fps,
             auto_generate_thumbnail: self.auto_generate_thumbnail,
             generate: self.generate.to_settings(),
+            visualizer: loopkaraoke::config::VisualizerSettings {
+                spectrum: self.spectrum_overlay.settings.clone(),
+                preview: self.visualizer_preview.settings.clone(),
+            },
+            karaoke: self.karaoke_settings(),
+            page_pins: self.page_pin_settings(),
         };
         if let Err(error) = settings.save(&self.paths) {
             self.warn(format!("Gagal menyimpan pengaturan: {error}"));
@@ -529,11 +699,22 @@ impl StudioApp {
     /// Finds FFmpeg, downloading it first if it is missing.
     fn install_ffmpeg(&mut self) {
         self.ffmpeg_error = None;
+        self.dependencies.operation = Some("Menyiapkan FFmpeg dan FFprobe...".to_owned());
+        self.dependencies.error = None;
         let tools_dir = self.paths.data_dir.join("tools");
         let progress = self.ffmpeg_download.clone();
-        self.spawn(
-            async move { Event::Ffmpeg(ffmpeg::ensure_installed(tools_dir, progress).await) },
-        );
+        let custom_dir = self.dependency_settings.tools_dir.clone();
+        self.spawn(async move {
+            let result = if let Some(directory) = custom_dir {
+                match Tools::from_directory(&directory) {
+                    Ok(tools) => tools.check().await.map(|()| tools),
+                    Err(error) => Err(error),
+                }
+            } else {
+                ffmpeg::ensure_installed(tools_dir, progress).await
+            };
+            Event::Ffmpeg(result)
+        });
     }
 
     /// Work that needs FFmpeg, started once it is available.
@@ -606,9 +787,24 @@ impl StudioApp {
     }
 
     fn handle(&mut self, event: Event) {
+        match event {
+            Event::RenderStorageFull(detail) => {
+                self.log(LogLevel::Error, &detail);
+                self.storage_full_message = Some(detail);
+                return;
+            }
+            Event::BatchRenderDiagnostic(level, detail) => {
+                self.log(level, detail);
+                return;
+            }
+            _ => {}
+        }
         self.pending = self.pending.saturating_sub(1);
         match event {
+            Event::RenderStorageFull(_) | Event::BatchRenderDiagnostic(..) => unreachable!(),
             Event::Ffmpeg(Ok(tools)) => {
+                self.dependencies.operation = None;
+                self.dependencies.report = None;
                 self.tools = tools;
                 self.ffmpeg_ready = true;
                 self.log(
@@ -618,8 +814,49 @@ impl StudioApp {
                 self.after_ffmpeg_ready();
             }
             Event::Ffmpeg(Err(error)) => {
+                self.dependencies.operation = None;
+                self.dependencies.error = Some(error.to_string());
                 self.ffmpeg_error = Some(error.to_string());
                 self.error(format!("FFmpeg gagal dimuat: {error}"));
+            }
+            Event::Dependencies(report) => {
+                self.dependencies.refreshing = false;
+                self.dependencies.report = Some(report);
+            }
+            Event::DependencyTools { directory, result } => {
+                self.dependencies.operation = None;
+                match result {
+                    Ok(tools) => {
+                        self.tools = tools;
+                        self.ffmpeg_ready = true;
+                        self.ffmpeg_error = None;
+                        self.dependency_settings.tools_dir = directory;
+                        self.save_settings();
+                        self.info("Lokasi FFmpeg dan FFprobe berhasil diterapkan.");
+                        let tools = self.tools.clone();
+                        self.spawn(
+                            async move { Event::Hardware(HardwareInfo::detect(&tools).await) },
+                        );
+                    }
+                    Err(error) => {
+                        self.dependencies.error = Some(error.to_string());
+                        self.error(format!("Dependensi gagal disiapkan: {error}"));
+                    }
+                }
+                self.refresh_dependencies();
+            }
+            Event::DependencyModel { result, message } => {
+                self.dependencies.operation = None;
+                self.dependencies.downloading_model = None;
+                match result {
+                    Ok(()) => self.info(message),
+                    Err(error) => {
+                        self.dependencies.error = Some(error.to_string());
+                        self.error(format!("Pengelolaan model gagal: {error}"));
+                    }
+                }
+                self.storage = None;
+                self.refresh_dependencies();
             }
             Event::Hardware(hardware) => {
                 self.hardware = Some(hardware.clone());
@@ -727,12 +964,13 @@ impl StudioApp {
             }
             Event::StandaloneAudios(items) => {
                 self.lrc_studio.loading_audio = false;
+                self.storage = None;
                 let mut added = 0;
                 let mut errors = Vec::new();
-                for (info, wav_path) in items {
+                for info in items {
                     match info {
                         Ok(audio) => {
-                            self.lrc_studio.add_audio_track(audio, wav_path);
+                            self.lrc_studio.add_audio_track(audio, None);
                             added += 1;
                         }
                         Err(error) => errors.push(error.to_string()),
@@ -747,6 +985,29 @@ impl StudioApp {
                         "Sebagian lagu gagal dimuat di Studio Lirik: {}",
                         errors.join("; ")
                     ));
+                }
+            }
+            Event::StandalonePreview {
+                track_id,
+                request_id,
+                result,
+            } => {
+                if !self
+                    .lrc_studio
+                    .preview_request_matches(track_id, request_id)
+                {
+                    return;
+                }
+                self.lrc_studio.loading_preview_id = None;
+                self.storage = None;
+                match result {
+                    Ok(preview) => {
+                        if let Some(track) = self.lrc_studio.current_track_mut() {
+                            track.wav_preview = Some(preview);
+                        }
+                        self.lrc_studio.start_playback();
+                    }
+                    Err(error) => self.warn(format!("Gagal menyiapkan preview Lirik: {error}")),
                 }
             }
             Event::StandaloneLyrics { track_id, result } => {
@@ -857,19 +1118,63 @@ impl StudioApp {
                     self.warn(format!("Sebagian lagu gagal dimuat: {}", failed.join("; ")));
                 }
             }
-            Event::GeneratePreview { track_id, result } => {
-                if self.generate.loading_preview_id != Some(track_id) {
+            Event::SpectrumAnalyzed {
+                track_id,
+                request_id,
+                result,
+            } => {
+                self.accept_spectrum_analysis(track_id, request_id, result);
+            }
+            Event::VisualizerPreview {
+                track_id,
+                request_id,
+                result,
+            } => {
+                if self.visualizer_loading_preview != Some(track_id)
+                    || self.visualizer_preview_request != request_id
+                    || self
+                        .generate
+                        .tracks
+                        .get(self.visualizer_selected_track)
+                        .map(|track| track.id)
+                        != Some(track_id)
+                {
                     return;
                 }
+                self.visualizer_loading_preview = None;
+                self.storage = None;
+                match result {
+                    Ok(preview) => {
+                        lyrics::win_audio::play_from_with_volume(
+                            preview.path(),
+                            self.visualizer_time,
+                            self.visualizer_volume,
+                        );
+                        self.generate.previews.insert(track_id, preview);
+                        self.visualizer_playing = true;
+                    }
+                    Err(error) => self.warn(format!("Gagal memutar preview Visualizer: {error}")),
+                }
+            }
+            Event::GeneratePreview {
+                track_id,
+                request_id,
+                result,
+            } => {
+                if !self.generate.preview_request_matches(track_id, request_id) {
+                    return;
+                }
+                self.storage = None;
                 self.generate.loading_preview_id = None;
                 match result {
                     Ok(wav) => {
                         lyrics::win_audio::play_from_with_volume(
-                            &wav,
+                            wav.path(),
                             0.0,
                             self.generate.preview_volume,
                         );
                         self.generate.playing_track_id = Some(track_id);
+                        self.generate.previews.insert(track_id, wav);
                     }
                     Err(error) => self.warn(format!("Gagal memutar pratinjau lagu: {error}")),
                 }
@@ -908,10 +1213,11 @@ impl StudioApp {
             Tab::Dashboard | Tab::Generate | Tab::BatchRender => false,
             Tab::Playlist => false,
             Tab::Lyrics => false,
-            Tab::Karaoke => self.show_karaoke_lyrics && self.has_any_track_lyrics(),
-            Tab::Visualizer => self.visualizer.enabled,
+            Tab::Karaoke => false,
+            Tab::Visualizer => false,
             Tab::Thumbnail => false,
             Tab::Storage => false,
+            Tab::Project => false,
         }
     }
 
@@ -963,7 +1269,7 @@ impl StudioApp {
             }
             return;
         }
-        let on_generate = self.tab.uses_generate_media();
+        let on_generate = self.tab.uses_generate_media() || self.tab == Tab::BatchRender;
         let mut audios = Vec::new();
         for path in files.into_iter().filter_map(|file| file.path) {
             if path.is_dir() {
@@ -1022,9 +1328,19 @@ impl StudioApp {
     }
 
     fn job_running(&self) -> bool {
-        self.job
-            .as_ref()
-            .is_some_and(|job| job.snapshot().is_running())
+        self.project_outputs
+            .clearing
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self.batch_render.is_running()
+            || self
+                .generate
+                .job
+                .as_ref()
+                .is_some_and(|job| job.snapshot().is_running())
+            || self
+                .job
+                .as_ref()
+                .is_some_and(|job| job.snapshot().is_running())
     }
 
     pub(super) fn pick_background_dynamic(&mut self) {
@@ -1134,7 +1450,24 @@ pub(super) fn collect_audios_in_folder(folder: &std::path::Path, out: &mut Vec<P
     out.extend(found);
 }
 
+fn is_storage_full(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("no space left on device")
+        || detail.contains("disk full")
+        || detail.contains("not enough space on the disk")
+        || detail.contains("not enough space on disk")
+        || (cfg!(windows)
+            && (detail.contains("(os error 112)") || detail.contains("(os error 39)")))
+        || (cfg!(unix) && detail.contains("(os error 28)"))
+}
+
 impl eframe::App for StudioApp {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let Some(gl) = gl {
+            self.spectrum_overlay.destroy_gpu(gl);
+        }
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let bg = if self.dark_mode {
             theme::PALETTE_DARK.bg
@@ -1144,7 +1477,21 @@ impl eframe::App for StudioApp {
         bg.to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.batch_render.is_running() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        if self.tab == Tab::Visualizer {
+            self.spectrum_overlay.ensure_gpu(frame.gl());
+        }
+        if self.tab != Tab::Visualizer {
+            self.spectrum_overlay.cancel_analysis();
+        }
+        if !matches!(self.tab, Tab::Visualizer | Tab::Karaoke)
+            && (self.visualizer_playing || self.visualizer_loading_preview.is_some())
+        {
+            self.stop_visualizer_playback(false);
+        }
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
@@ -1175,6 +1522,12 @@ impl eframe::App for StudioApp {
                         );
                     }
                     JobStatus::Completed => {
+                        self.log(LogLevel::Info, format!(
+                            "Waktu render: total {:.1}s; audio {:.1}s; video {:.1}s; finalisasi {:.1}s; encoder {}",
+                            snapshot.timings.total_elapsed_seconds, snapshot.timings.audio_seconds,
+                            snapshot.timings.video_seconds, snapshot.timings.finalizing_seconds,
+                            snapshot.encoder_name,
+                        ));
                         if let Some(output) = &snapshot.output_file {
                             self.notify_success(
                                 format!("Render: Selesai 100%! Berkas video: {}", output.display()),
@@ -1185,7 +1538,12 @@ impl eframe::App for StudioApp {
                         }
                     }
                     JobStatus::Failed => {
-                        self.error(format!("Render: Gagal - {}", snapshot.error_message));
+                        let detail = format!("Render gagal: {}", snapshot.error_message);
+                        if is_storage_full(&detail) {
+                            self.handle(Event::RenderStorageFull(detail));
+                        } else {
+                            self.error(detail);
+                        }
                     }
                     _ => {}
                 }
@@ -1337,12 +1695,39 @@ impl eframe::App for StudioApp {
                     });
             });
 
+        let saved_preferences = (self.karaoke_settings(), self.page_pin_settings());
         let content_rect = egui::CentralPanel::default()
             .frame(theme::panel_frame(ctx, 16))
             .show(ctx, |ui| {
                 let panel_rect = ui.max_rect();
-                if !self.ffmpeg_ready {
+                if !self.ffmpeg_ready && !matches!(self.tab, Tab::Storage | Tab::Project) {
                     self.ffmpeg_setup_panel(ui);
+                    return panel_rect;
+                }
+                let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+                let pinned_tab: Option<fn(&mut Self, &mut egui::Ui)> = match self.tab {
+                    Tab::Karaoke
+                        if self.karaoke_preview_pinned && Self::karaoke_has_wide_layout(ui) =>
+                    {
+                        Some(Self::karaoke_tab)
+                    }
+                    Tab::Visualizer if maximized && self.visualizer_preview_pinned => {
+                        Some(Self::visualizer_tab)
+                    }
+                    Tab::Thumbnail
+                        if Self::karaoke_has_wide_layout(ui) && self.thumbnail_preview_pinned =>
+                    {
+                        Some(Self::thumbnail_tab)
+                    }
+                    Tab::Lyrics if maximized && self.lyrics_header_pinned => Some(Self::lyrics_tab),
+                    Tab::Playlist if maximized && self.playlist_header_pinned => {
+                        Some(Self::playlist_tools_tab)
+                    }
+                    _ => None,
+                };
+                if let Some(draw) = pinned_tab {
+                    theme::apply_control_style(ui);
+                    draw(self, ui);
                     return panel_rect;
                 }
                 egui::ScrollArea::vertical()
@@ -1351,6 +1736,7 @@ impl eframe::App for StudioApp {
                         theme::apply_control_style(ui);
                         match self.tab {
                             Tab::Dashboard => self.dashboard_tab(ui),
+                            Tab::Project => self.project_outputs_tab(ui),
                             Tab::Quick => self.quick_tab(ui),
                             Tab::Generate => self.generate_tab(ui),
                             Tab::BatchRender => self.batch_render_tab(ui),
@@ -1366,7 +1752,28 @@ impl eframe::App for StudioApp {
             })
             .inner;
 
+        if saved_preferences != (self.karaoke_settings(), self.page_pin_settings()) {
+            self.save_settings();
+        }
         self.render_toast(ctx, content_rect);
+        if let Some(detail) = &self.storage_full_message {
+            let modal = egui::Modal::new(egui::Id::new("render_storage_full")).show(ctx, |ui| {
+                ui.set_max_width(520.0);
+                ui.heading("Penyimpanan penuh");
+                ui.label(
+                    "Kosongkan ruang pada drive output atau folder sementara sebelum mencoba lagi.",
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        ui.label(detail);
+                    });
+                ui.button("Tutup").clicked()
+            });
+            if modal.inner || modal.should_close() {
+                self.storage_full_message = None;
+            }
+        }
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
             drop_overlay(ctx);
@@ -1710,10 +2117,14 @@ impl StudioApp {
                                     .color(badge_color)
                                     .strong(),
                             );
-                            ui.monospace(
-                                egui::RichText::new(&entry.message)
-                                    .size(11.0)
-                                    .color(theme::TEXT),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&entry.message)
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(theme::TEXT),
+                                )
+                                .wrap(),
                             );
                         });
                     }
@@ -1737,18 +2148,6 @@ impl StudioApp {
             }
             if let (Some(reason), false) = (blocker, running) {
                 ui.colored_label(theme::WARNING, reason);
-            }
-        } else if let Some(next) = self.tab.next() {
-            if ui
-                .add(theme::primary_button(format!("Lanjut: {}", next.label())))
-                .clicked()
-            {
-                self.tab = next;
-            }
-        }
-        if let Some(previous) = self.tab.previous() {
-            if ui.button("Kembali").clicked() {
-                self.tab = previous;
             }
         }
         if let Some(job) = self.job.as_ref().filter(|job| job.snapshot().is_running()) {
@@ -1990,9 +2389,6 @@ mod tests {
         for tab in [Tab::Quick, Tab::BatchRender] {
             assert!(!tab.uses_generate_media());
         }
-        assert!(Tab::Playlist.next().is_none());
-        assert!(Tab::Playlist.previous().is_none());
-        assert!(Tab::Visualizer.previous() == Some(Tab::Quick));
     }
 
     #[test]
@@ -2000,7 +2396,6 @@ mod tests {
         assert!(Tab::ALL
             .iter()
             .all(|tab| !matches!(tab.label(), "Background" | "Render")));
-        assert!(Tab::Visualizer.next() == Some(Tab::Quick));
     }
 
     #[test]

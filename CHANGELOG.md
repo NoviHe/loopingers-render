@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.2 — 2026-11-19
+
+Penomoran LoopKaraoke Studio beralih dari seri 2.x ke 0.2.x.
+
+- **Batch Render** menyusun lagu utuh untuk setiap video, mendukung thumbnail unggahan dengan cadangan otomatis, dan menampilkan progres serta hasil per video.
+- **Galeri Render** menampilkan thumbnail, kelompok batch, playlist, timestamp, dan pemakaian ruang output.
+- **Studio Lirik dan Karaoke** mendukung simpan banyak LRC, preview lirik sesuai waktu pemutaran, serta banner pembuka dengan gaya yang dapat diatur.
+- **Visualizer** menyediakan spektrum reaktif audio dan pengaturan teks, latar, serta logo.
+- **Pengaturan** mengelompokkan preferensi tiap fitur, menyimpan status pin, dan menyediakan pengelolaan folder output serta dependensi.
+
 ## v2.1.2 — 2026-11-17
 
 Pembaruan ini menyeragamkan tampilan kontrol aplikasi dan memperbaiki build

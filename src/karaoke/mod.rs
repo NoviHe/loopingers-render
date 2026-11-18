@@ -1,5 +1,6 @@
 pub mod ass;
 pub mod lrc;
+pub mod preview;
 pub mod styles;
 pub mod transcribe;
 

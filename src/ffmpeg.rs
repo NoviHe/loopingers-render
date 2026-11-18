@@ -30,6 +30,30 @@ pub struct Tools {
 }
 
 impl Tools {
+    /// Selects an explicit tool installation without falling back to bundled binaries or PATH.
+    pub fn from_directory(directory: &Path) -> Result<Self> {
+        let directory = std::path::absolute(directory)?;
+        let ffmpeg = directory.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        let ffprobe = directory.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX));
+        for path in [&ffmpeg, &ffprobe] {
+            if !path.is_file() {
+                return Err(Error::Tool(format!(
+                    "Berkas dependensi tidak ditemukan: {}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(Self { ffmpeg, ffprobe })
+    }
+
+    pub fn ffmpeg_path(&self) -> &Path {
+        &self.ffmpeg
+    }
+
+    pub fn ffprobe_path(&self) -> &Path {
+        &self.ffprobe
+    }
+
     pub fn locate() -> Self {
         Self::locate_in(Path::new(""))
     }
@@ -50,8 +74,15 @@ impl Tools {
     }
 
     pub async fn check(&self) -> Result<()> {
-        run(self.ffmpeg().arg("-version"), "ffmpeg").await?;
-        run(self.ffprobe().arg("-version"), "ffprobe").await?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            run(self.ffmpeg().arg("-version"), "ffmpeg").await?;
+            run(self.ffprobe().arg("-version"), "ffprobe").await?;
+            Ok::<(), Error>(())
+        })
+        .await
+        .map_err(|_| {
+            Error::Tool("Pemeriksaan FFmpeg/FFprobe melewati batas waktu 10 detik.".to_owned())
+        })??;
         Ok(())
     }
 }

@@ -33,8 +33,6 @@ pub mod lyrics {
     pub const MODEL: &str = "Model lebih besar lebih akurat tetapi lebih lambat dan lebih besar untuk diunduh: tiny sekitar 75 MB, base 142 MB, small 466 MB.";
     pub const LANGUAGE: &str = "Bahasa lirik. Memilih bahasa yang benar membuat hasil lebih akurat; \"Deteksi otomatis\" membiarkan Whisper menebak.";
     pub const GPU: &str = "Mempercepat Whisper dengan GPU. Hanya aktif bila build ini mendukungnya (--features cuda atau vulkan); jika tidak, Whisper berjalan di CPU.";
-    pub const STYLE: &str =
-        "Mengatur tampilan teks karaoke di video: tema warna, ukuran, posisi, dan efek sapuan.";
     pub const COLORS: &str = "Normal: warna kata sebelum dinyanyikan. Saat bernyanyi: warna yang menyapu kata ketika dinyanyikan. Garis tepi dan bayangan menjaga teks tetap terbaca di atas background terang.";
     pub const FONT_CHOICE: &str =
         "Pilih jenis font lirik karaoke dari preset populer (Impact, Arial Black, Segoe UI, dll) atau unggah berkas font kustom (.ttf / .otf).";
@@ -66,22 +64,7 @@ pub mod thumbnail {
 }
 
 pub mod visualizer {
-    pub const HEADING: &str = "Studio Visualizer Musik: buat animasi visual spektrum audio yang bergerak mengikuti ritme lagu, atur gaya, warna, teks, logo, partikel, dan efek latar belakang.";
-    pub const PRESET: &str = "Bentuk visualizer spektrum: balok spektrum (bars), lingkaran memutar (radial NCS), lampu LED, gelombang halus, atau grid cyber.";
-    pub const POSITION: &str =
-        "Penempatan visualizer di layar: Tengah (Center), Bawah (Bottom), atau Layar Penuh (Full).";
-    pub const SIZE: &str = "Skala / ukuran visualizer terhadap kanvas video.";
-    pub const SENSITIVITY: &str =
-        "Tingkat sensitivitas / reaksi ketinggian spektrum terhadap volume dan ketukan audio.";
-    pub const ROTATION: &str =
-        "Sudut putaran visualizer. Tombol Rata 0° mengembalikan orientasi tegak lurus.";
-    pub const COLORS: &str = "Gradien warna spektrum: Warna A untuk bagian bawah/pangkal, dan Warna B untuk bagian atas/ujung.";
-    pub const BG_FX: &str = "Efek latar belakang: tingkat gelap (dim), keburaman (blur), warna nuansa (tint), getaran ketukan (pulse), dan bingkai neon RGB bercahaya.";
-    pub const TEXT: &str =
-        "Teks informasi lagu atau watermark kustom dengan efek neon glow dan bayangan.";
-    pub const OVERLAY: &str = "Gambar logo atau ikon kanal transparan yang ditempatkan di depan atau di belakang visualizer, dapat bergetar mengikuti ketukan.";
-    pub const PARTICLES: &str =
-        "Efek partikel animasi mengambang (bintik debu, bintang, percikan api, salju, hujan neon).";
+    pub const HEADING: &str = "Preview spektrum reaktif audio, teks, logo, dan efek background. Atur setiap lapisan melalui tab di Setting Visualizer.";
 }
 
 pub mod storage {
@@ -93,8 +76,5 @@ pub mod storage {
         "Video dan thumbnail yang sudah jadi. Menghapus semua video hasil tidak bisa dibatalkan.";
     pub const MODELS: &str =
         "Model Whisper yang sudah diunduh. Diunduh lagi otomatis saat dipakai.";
-    pub const CLEAN_TEMP: &str = "Menghapus semua berkas sementara.";
-    pub const CLEAN_OUTPUTS: &str = "Menghapus semua video hasil render. Tidak bisa dibatalkan.";
-    pub const FILES: &str =
-        "Berkas hasil satu per satu. Buka untuk memeriksa, atau hapus yang tidak dipakai.";
+    pub const CLEAN_TEMP: &str = "Menghapus berkas sementara di folder utama temp. Preview audio Playlist dan Lirik yang masih digunakan dipertahankan dan otomatis dihapus saat lagunya dihapus atau aplikasi ditutup.";
 }

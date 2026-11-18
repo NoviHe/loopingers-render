@@ -1,8 +1,8 @@
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex},
     thread,
 };
 
@@ -13,7 +13,7 @@ use whisper_rs::{
 use super::{spread_words, LyricLine, LyricWord};
 use crate::{
     error::{Error, Result},
-    ffmpeg::{self, Tools},
+    ffmpeg::{self, DownloadProgress, Tools},
     util::round2,
 };
 
@@ -73,6 +73,14 @@ pub struct Transcriber {
 }
 
 impl Transcriber {
+    pub fn clear_cache(&self) -> Result<()> {
+        *self
+            .loaded
+            .lock()
+            .map_err(|_| Error::internal("Cache model Whisper rusak."))? = None;
+        Ok(())
+    }
+
     pub async fn transcribe(
         &self,
         tools: &Tools,
@@ -152,8 +160,19 @@ fn load_context(path: &Path, use_gpu: bool) -> Result<WhisperContext> {
 }
 
 fn ensure_model(path: &Path, size: ModelSize) -> Result<()> {
-    if path.is_file() {
+    ensure_model_with_progress(path, size, &DownloadProgress::default())
+}
+
+pub(crate) fn ensure_model_with_progress(
+    path: &Path,
+    size: ModelSize,
+    progress: &DownloadProgress,
+) -> Result<()> {
+    if fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0) {
         return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
     let url = format!("{MODEL_BASE_URL}/{}", size.file_name());
     let download_error = |error: &dyn std::fmt::Display| {
@@ -161,16 +180,59 @@ fn ensure_model(path: &Path, size: ModelSize) -> Result<()> {
     };
 
     let response = ureq::get(&url).call().map_err(|e| download_error(&e))?;
+    let expected = response.body().content_length();
+    progress.downloaded.store(0, Ordering::Relaxed);
+    progress
+        .total
+        .store(expected.unwrap_or(0), Ordering::Relaxed);
     let partial: PathBuf = path.with_extension("bin.part");
     let mut file = File::create(&partial)?;
-    let copied = io::copy(&mut response.into_body().into_reader(), &mut file);
+    let copied = copy_model_download(
+        &mut response.into_body().into_reader(),
+        &mut file,
+        expected,
+        progress,
+    );
     drop(file);
     if let Err(error) = copied {
         let _ = fs::remove_file(&partial);
         return Err(download_error(&error));
     }
-    fs::rename(&partial, path)?;
+    // Windows rename cannot replace an existing empty file from a failed install.
+    if fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0) {
+        fs::remove_file(path)?;
+    }
+    if let Err(error) = fs::rename(&partial, path) {
+        let _ = fs::remove_file(&partial);
+        return Err(error.into());
+    }
     Ok(())
+}
+
+fn copy_model_download(
+    reader: &mut impl Read,
+    file: &mut File,
+    expected: Option<u64>,
+    progress: &DownloadProgress,
+) -> io::Result<()> {
+    let mut chunk = [0_u8; 64 * 1024];
+    let mut copied = 0_u64;
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&chunk[..read])?;
+        copied += read as u64;
+        progress.downloaded.store(copied, Ordering::Relaxed);
+    }
+    if copied == 0 || expected.is_some_and(|length| length != copied) {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Unduhan model kosong atau belum lengkap.",
+        ));
+    }
+    file.sync_all()
 }
 
 fn transcribe_samples(
@@ -313,6 +375,38 @@ fn merge_tokens(pieces: impl Iterator<Item = (String, f64, f64)>) -> Vec<LyricWo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_download_rejects_empty_and_truncated_bytes_and_reports_progress() {
+        let root = std::env::temp_dir().join(format!("model-copy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let progress = DownloadProgress::default();
+        let path = root.join("download.part");
+        assert!(copy_model_download(
+            &mut io::Cursor::new(b""),
+            &mut File::create(&path).unwrap(),
+            None,
+            &progress
+        )
+        .is_err());
+        assert!(copy_model_download(
+            &mut io::Cursor::new(b"model"),
+            &mut File::create(&path).unwrap(),
+            Some(8),
+            &progress
+        )
+        .is_err());
+        assert_eq!(progress.downloaded.load(Ordering::Relaxed), 5);
+        copy_model_download(
+            &mut io::Cursor::new(b"model"),
+            &mut File::create(&path).unwrap(),
+            Some(5),
+            &progress,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"model");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn piece(text: &str, start: f64, end: f64) -> (String, f64, f64) {
         (text.to_owned(), start, end)

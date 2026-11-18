@@ -5,7 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rand::{seq::SliceRandom, Rng};
+use rand::{
+    seq::{IteratorRandom, SliceRandom},
+    Rng,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct BatchSettings {
@@ -37,15 +40,18 @@ pub(super) struct PlanTrack {
 
 #[derive(Debug)]
 pub(super) struct PlannedVideo {
+    pub output_code: String,
     pub visual: PathBuf,
     pub thumbnail: Option<PathBuf>,
     pub duration: u64,
+    pub requested_duration: Option<u64>,
     pub order: Vec<usize>,
 }
 
 #[derive(Debug)]
 pub(super) struct BatchPlan {
     pub block_name: String,
+    pub crossfade_secs: f64,
     pub tracks: Vec<PlanTrack>,
     pub videos: Vec<PlannedVideo>,
 }
@@ -91,6 +97,7 @@ pub(super) fn build_plan(
     thumbnails: &[PathBuf],
     tracks: &[PlanTrack],
     rng: &mut impl Rng,
+    crossfade_secs: f64,
 ) -> Result<BatchPlan, String> {
     if visuals.is_empty() {
         return Err("Pilih folder berisi video visual terlebih dahulu.".into());
@@ -115,11 +122,8 @@ pub(super) fn build_plan(
             .parse::<usize>()
             .map_err(|_| "Jumlah video terlalu besar.".to_string())?
     };
-    if count == 0 || count > visuals.len() || count > 10_000 {
-        return Err(format!(
-            "Jumlah video harus 1–{} (satu file visual per hasil, maksimal 10000).",
-            visuals.len().min(10_000)
-        ));
+    if count == 0 || count > 10_000 {
+        return Err("Jumlah video harus antara 1 dan 10000.".into());
     }
     let name = settings.block_name.trim();
     if name.is_empty() || name.chars().any(char::is_control) {
@@ -131,46 +135,206 @@ pub(super) fn build_plan(
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
-    let durations = if !manual.is_empty() {
+    let manual_durations = if manual.is_empty() {
+        Vec::new()
+    } else {
         if manual.len() != count {
-            return Err(format!("Isi tepat {count} durasi manual, ditemukan {}. Durasi manual menggantikan rentang acak.", manual.len()));
+            return Err(format!(
+                "Isi tepat {count} durasi manual, ditemukan {}.",
+                manual.len()
+            ));
         }
         manual
             .iter()
             .map(|line| parse_duration(line))
             .collect::<Result<Vec<_>, _>>()?
-    } else {
+    };
+    let use_range = manual_durations.is_empty();
+    let range = if use_range
+        && !(settings.range_start.trim().is_empty() && settings.range_end.trim().is_empty())
+    {
+        if settings.range_start.trim().is_empty() || settings.range_end.trim().is_empty() {
+            return Err("Isi minimum dan maksimum, atau kosongkan keduanya.".into());
+        }
         let start = parse_duration(&settings.range_start)?;
         let end = parse_duration(&settings.range_end)?;
         if start > end {
-            return Err("Durasi Awal tidak boleh melebihi Akhir.".into());
+            return Err("Durasi minimum tidak boleh melebihi maksimum.".into());
         }
-        (0..count).map(|_| rng.gen_range(start..=end)).collect()
+        Some((start as f64, end as f64))
+    } else {
+        None
     };
-    let videos = visuals
-        .iter()
-        .take(count)
-        .zip(durations)
-        .map(|(visual, duration)| {
-            let mut order: Vec<_> = (0..tracks.len()).collect();
-            order.shuffle(rng);
-            let thumbnail = thumbnails
-                .iter()
-                .find(|thumb| super::normalized_stem(thumb) == super::normalized_stem(visual))
-                .cloned();
-            PlannedVideo {
-                visual: visual.clone(),
-                thumbnail,
-                duration,
-                order,
+    if tracks.len() < 2 {
+        return Err("Tambahkan minimal dua lagu untuk membuat rencana.".into());
+    }
+    let mut reductions = Vec::new();
+    let mut range_fallback = None;
+    let mut videos = Vec::with_capacity(count);
+    let mut visual_order: Vec<_> = visuals.iter().take(count).collect();
+    while visual_order.len() < count {
+        let mut round: Vec<_> = visuals.iter().collect();
+        round.shuffle(rng);
+        if round.len() > 1 && round.first() == visual_order.last() {
+            round.swap(0, 1);
+        }
+        visual_order.extend(round.into_iter().take(count - visual_order.len()));
+    }
+    for (index, visual) in visual_order.into_iter().enumerate() {
+        let mut order: Vec<_> = (0..tracks.len()).collect();
+        order.shuffle(rng);
+        let requested_duration = manual_durations.get(index).copied();
+        let duration = if let Some(target) = requested_duration {
+            let min = target.saturating_sub(30) as f64;
+            let max = (target + 30).min(MAX_DURATION) as f64;
+            let mut nearest = None;
+            let (selection, total) = ranged_order(
+                tracks, crossfade_secs, min, max, rng, &mut nearest,
+            )
+            .ok_or_else(|| {
+                let suggestion = nearest.map_or_else(String::new, |duration| {
+                    format!(" Durasi terdekat yang ditemukan: {}.", timestamp(duration.round() as u64))
+                });
+                format!(
+                    "Video {}: belum ditemukan susunan lagu utuh dalam toleransi ±30 detik dari {}.{suggestion}",
+                    index + 1, timestamp(target)
+                )
+            })?;
+            order = selection;
+            total.ceil() as u64
+        } else if let Some((min, max)) = range {
+            let result = ranged_order(tracks, crossfade_secs, min, max, rng, &mut None)
+                .or_else(|| range_fallback.clone())
+                .ok_or_else(|| {
+                    "Belum ditemukan susunan lagu utuh dalam rentang ini. Coba perluas rentang."
+                        .to_string()
+                })?;
+            if range_fallback.is_none() {
+                range_fallback = Some(result.clone());
             }
-        })
-        .collect();
+            order = result.0;
+            result.1.ceil() as u64
+        } else {
+            if reductions.is_empty() {
+                let limit = match tracks.len() {
+                    2..=5 => 2,
+                    6..=10 => 4,
+                    11..=20 => 6,
+                    _ => 8,
+                }
+                .min(tracks.len() - 2);
+                reductions.extend(if limit == 0 { 0..=0 } else { 1..=limit });
+                reductions.shuffle(rng);
+            }
+            order.truncate(tracks.len() - reductions.pop().unwrap_or(0));
+            let total = order.iter().fold(0.0, |elapsed, &i| {
+                append_duration(elapsed, tracks[i].duration, crossfade_secs)
+            });
+            if total > MAX_DURATION as f64 {
+                return Err("Durasi playlist melebihi batas 7 hari.".into());
+            }
+            total.ceil() as u64
+        };
+        let thumbnail = thumbnails
+            .iter()
+            .find(|thumb| super::normalized_stem(thumb) == super::normalized_stem(visual))
+            .cloned();
+        videos.push(PlannedVideo {
+            output_code: loopkaraoke::util::random_code(6),
+            visual: visual.clone(),
+            thumbnail,
+            duration,
+            requested_duration,
+            order,
+        });
+    }
     Ok(BatchPlan {
         block_name: name.into(),
+        crossfade_secs,
         tracks: tracks.to_vec(),
         videos,
     })
+}
+
+fn append_duration(elapsed: f64, track: f64, crossfade: f64) -> f64 {
+    let overlap = crossfade.min(elapsed * 0.45).min(track * 0.45);
+    elapsed + track
+        - if overlap >= 0.05 {
+            (overlap * 1000.0).round() / 1000.0
+        } else {
+            0.0
+        }
+}
+
+fn ranged_order(
+    tracks: &[PlanTrack],
+    crossfade: f64,
+    min: f64,
+    max: f64,
+    rng: &mut impl Rng,
+    nearest: &mut Option<f64>,
+) -> Option<(Vec<usize>, f64)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates: Vec<_> = tracks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, track)| seen.insert(&track.path).then_some(index))
+        .collect();
+    if candidates.len() < 2 {
+        return None;
+    }
+    let target = (min + max) / 2.0;
+    let mut consider = |duration: f64| {
+        if nearest.is_none_or(|best| (duration - target).abs() < (best - target).abs()) {
+            *nearest = Some(duration);
+        }
+    };
+    // Try shuffled selections of whole tracks. Extend a full playlist only
+    // when its crossfaded duration falls short of the minimum.
+    for _ in 0..64 {
+        candidates.shuffle(rng);
+        let mut order = Vec::new();
+        let mut elapsed = 0.0;
+        let full_duration = candidates.iter().fold(0.0, |total, &i| {
+            append_duration(total, tracks[i].duration, crossfade)
+        });
+        for &i in &candidates {
+            let next = append_duration(elapsed, tracks[i].duration, crossfade);
+            if !order.is_empty() {
+                consider(next);
+            }
+            if next <= max {
+                order.push(i);
+                elapsed = next;
+                if order.len() >= 2 && elapsed >= min {
+                    return Some((order, elapsed));
+                }
+            }
+        }
+        if full_duration < min {
+            while elapsed < min {
+                let next = candidates
+                    .iter()
+                    .copied()
+                    .filter(|i| order.last() != Some(i))
+                    .filter(|&i| {
+                        let next = append_duration(elapsed, tracks[i].duration, crossfade);
+                        if !order.is_empty() {
+                            consider(next);
+                        }
+                        next <= max
+                    })
+                    .choose(rng);
+                let Some(i) = next else { break };
+                order.push(i);
+                elapsed = append_duration(elapsed, tracks[i].duration, crossfade);
+            }
+            if order.len() >= 2 && elapsed >= min {
+                return Some((order, elapsed));
+            }
+        }
+    }
+    None
 }
 
 impl BatchPlan {
@@ -185,18 +349,24 @@ impl BatchPlan {
     pub fn text(&self) -> String {
         let mut output = String::new();
         for (index, video) in self.videos.iter().enumerate() {
-            let _ = writeln!(output, "{} {}\nVisual: {}\nThumbnail: {}\nDurasi: {}\nUrutan lagu (diulang bila durasi melebihi satu putaran):",
-                self.block_name, index + 1, video.visual.display(),
-                video.thumbnail.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Belum tersedia".into()),
-                timestamp(video.duration));
+            let _ = writeln!(
+                output,
+                "{} {}\nVisual: {}\nThumbnail: {}\nDurasi: {}\nUrutan lagu:",
+                self.block_name,
+                index + 1,
+                video.visual.display(),
+                video
+                    .thumbnail
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "Belum tersedia".into()),
+                timestamp(video.duration)
+            );
             let mut elapsed = 0.0;
-            // Include every audible occurrence, with the final track trimmed to the target.
-            for (number, track_index) in video.order.iter().cycle().enumerate() {
-                if elapsed >= video.duration as f64 {
-                    break;
-                }
+            for (number, track_index) in video.order.iter().enumerate() {
                 let track = &self.tracks[*track_index];
-                let end = (elapsed + track.duration).min(video.duration as f64);
+                let end = append_duration(elapsed, track.duration, self.crossfade_secs);
+                let start = end - track.duration;
                 let title: String = track
                     .title
                     .chars()
@@ -206,7 +376,7 @@ impl BatchPlan {
                     output,
                     "{}. [{} – {}] {}",
                     number + 1,
-                    timestamp(elapsed.floor() as u64),
+                    timestamp(start.max(0.0).floor() as u64),
                     timestamp(end.ceil() as u64),
                     title
                 );
@@ -264,6 +434,28 @@ mod tests {
     }
 
     #[test]
+    fn empty_durations_follow_playlist_and_partial_range_is_rejected() {
+        let (_, visuals, mut tracks) = fixture();
+        tracks[0].duration = 30.5;
+        let mut settings = BatchSettings::default();
+        let mut rng = StdRng::seed_from_u64(91);
+        let plan = build_plan(&settings, &visuals, &[], &tracks, &mut rng, 0.0).unwrap();
+        assert!(plan
+            .videos
+            .iter()
+            .all(|video| video.requested_duration.is_none() && video.duration == 71));
+        assert_eq!(plan.text().matches(". [").count(), 4);
+        settings.range_start = "1:00".into();
+        assert!(build_plan(&settings, &visuals, &[], &tracks, &mut rng, 0.0).is_err());
+        settings.range_end = "2:00".into();
+        let plan = build_plan(&settings, &visuals, &[], &tracks, &mut rng, 0.0).unwrap();
+        assert!(plan
+            .videos
+            .iter()
+            .all(|video| video.requested_duration.is_none()));
+    }
+
+    #[test]
     fn validates_duration_components_and_overflow() {
         assert_eq!(parse_duration("60:00").unwrap(), 3600);
         assert_eq!(parse_duration("1:02:03").unwrap(), 3723);
@@ -292,11 +484,15 @@ mod tests {
             &[],
             &tracks,
             &mut StdRng::seed_from_u64(5),
+            0.0,
         )
         .unwrap();
         assert_eq!(
-            plan.videos.iter().map(|v| v.duration).collect::<Vec<_>>(),
-            vec![2400, 2730]
+            plan.videos
+                .iter()
+                .map(|v| v.requested_duration)
+                .collect::<Vec<_>>(),
+            vec![Some(2400), Some(2730)]
         );
         settings.manual = "40:00".into();
         assert!(build_plan(
@@ -304,7 +500,8 @@ mod tests {
             &visuals,
             &[],
             &tracks,
-            &mut StdRng::seed_from_u64(5)
+            &mut StdRng::seed_from_u64(5),
+            0.0
         )
         .is_err());
     }
@@ -312,14 +509,15 @@ mod tests {
     #[test]
     fn validates_counts_range_and_playlist() {
         let (mut settings, visuals, tracks) = fixture();
-        for count in ["0", "-1", "3", "1.5", "9999999999999999999999999"] {
+        for count in ["0", "-1", "10001", "1.5", "9999999999999999999999999"] {
             settings.count = count.into();
             assert!(build_plan(
                 &settings,
                 &visuals,
                 &[],
                 &tracks,
-                &mut StdRng::seed_from_u64(1)
+                &mut StdRng::seed_from_u64(1),
+                0.0
             )
             .is_err());
         }
@@ -330,11 +528,20 @@ mod tests {
             &visuals,
             &[],
             &tracks,
-            &mut StdRng::seed_from_u64(1)
+            &mut StdRng::seed_from_u64(1),
+            0.0
         )
         .is_err());
         settings.range_start = "1:00".into();
-        assert!(build_plan(&settings, &visuals, &[], &[], &mut StdRng::seed_from_u64(1)).is_err());
+        assert!(build_plan(
+            &settings,
+            &visuals,
+            &[],
+            &[],
+            &mut StdRng::seed_from_u64(1),
+            0.0
+        )
+        .is_err());
     }
 
     #[test]
@@ -342,19 +549,20 @@ mod tests {
         let (mut settings, visuals, tracks) = fixture();
         settings.count = " 1 ".into();
         settings.block_name = " Pilihan ".into();
-        settings.range_start = "40:00".into();
-        settings.range_end = "40:00".into();
+        settings.range_start = "1:10".into();
+        settings.range_end = "1:10".into();
         let plan = build_plan(
             &settings,
             &visuals,
             &[],
             &tracks,
             &mut StdRng::seed_from_u64(1),
+            0.0,
         )
         .unwrap();
         assert_eq!(plan.videos.len(), 1);
         assert_eq!(plan.videos[0].visual, visuals[0]);
-        assert_eq!(plan.videos[0].duration, 2400);
+        assert_eq!(plan.videos[0].duration, 70);
         assert!(plan.text().starts_with("Pilihan 1\n"));
         assert_eq!(plan.filename(), "acakan_1-1_2_lagu.txt");
 
@@ -365,6 +573,7 @@ mod tests {
             &[],
             &tracks,
             &mut StdRng::seed_from_u64(1),
+            0.0,
         )
         .is_err());
     }
@@ -379,6 +588,7 @@ mod tests {
             &[],
             &tracks,
             &mut StdRng::seed_from_u64(1),
+            0.0,
         )
         .is_err());
         settings.manual.clear();
@@ -390,6 +600,7 @@ mod tests {
                 &[],
                 &tracks,
                 &mut StdRng::seed_from_u64(1),
+                0.0,
             )
             .is_err());
         }
@@ -404,6 +615,7 @@ mod tests {
             &["P-1.PNG".into()],
             &tracks,
             &mut StdRng::seed_from_u64(4),
+            0.0,
         )
         .unwrap();
         assert_eq!(plan.videos.len(), 2);
@@ -426,9 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn exported_order_repeats_and_trims_at_target_duration() {
-        let (mut settings, visuals, mut tracks) = fixture();
-        tracks.truncate(1);
+    fn manual_duration_exports_whole_tracks() {
+        let (mut settings, visuals, tracks) = fixture();
         settings.count = "1".into();
         settings.manual = "1:10".into();
         let plan = build_plan(
@@ -437,12 +648,13 @@ mod tests {
             &[],
             &tracks,
             &mut StdRng::seed_from_u64(1),
+            0.0,
         )
         .unwrap();
         let text = plan.text();
-        assert!(text.contains("1. [0:00 – 0:30] A"));
-        assert!(text.contains("2. [0:30 – 1:00] A"));
-        assert!(text.contains("3. [1:00 – 1:10] A"));
-        assert!(!text.contains("4. ["));
+        assert_eq!(plan.videos[0].duration, 70);
+        assert_eq!(plan.videos[0].requested_duration, Some(70));
+        assert!(text.contains("2. ["));
+        assert!(!text.contains("3. ["));
     }
 }
